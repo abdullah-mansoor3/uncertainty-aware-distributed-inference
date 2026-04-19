@@ -1,0 +1,35 @@
+nodes:
+  master:
+    ip: "100.x.x.x"
+    port: 8000
+    n_threads: 12
+    ram_gb: 16
+    role: "master"
+  worker:
+    ip: "100.x.x.x"
+    port: 8001
+    n_threads: 4
+    ram_gb: 8
+    role: "worker"
+
+model:
+  path: "./models/llama-3.2-3b-q4_k_m.gguf"
+  n_ctx: 2048
+  max_tokens: 256
+  temperature: 0.6
+  top_p: 0.9
+  logprobs: 10
+
+scheduler:
+  uncertainty_threshold: 0.5
+  network_fallback_ms: 100.0
+  probe_tokens: 20
+
+datasets:
+  nq_open: "./data/processed/nq_open_100.jsonl"
+  mmlu_pro: "./data/processed/mmlu_pro_100.jsonl"
+  synthetic: "./data/processed/synthetic_prompts.jsonl"
+
+evaluation:
+  n_bins: 10
+  correctness_metric: "rouge1"

@@ -1,0 +1,100 @@
+{"id": 1, "original_prompt": "who sold out jesus for 30 pieces of silver", "ground_truth": ["Judas Iscariot"]}
+{"id": 2, "original_prompt": "who does the voice of cruz on cars 3", "ground_truth": ["Cristela Alonzo"]}
+{"id": 3, "original_prompt": "who won the academy award for best original musical score", "ground_truth": ["Alexandre Desplat", "The Shape of Water"]}
+{"id": 4, "original_prompt": "when did avatar the last airbender first air", "ground_truth": ["February 2005", "February 21, 2005", "February 21, 2005"]}
+{"id": 5, "original_prompt": "who is hosting e live from the red carpet", "ground_truth": ["Ryan Seacrest", "Giuliana Rancic"]}
+{"id": 6, "original_prompt": "what does g stand for in ncis los angeles", "ground_truth": ["Grisha"]}
+{"id": 7, "original_prompt": "who sings too much time on my hands lyrics", "ground_truth": ["Tommy Shaw"]}
+{"id": 8, "original_prompt": "what type of reaction occurs to form a dipeptide", "ground_truth": ["peptide bond"]}
+{"id": 9, "original_prompt": "when did the first marvel vs capcom come out", "ground_truth": ["1998", "in 1996", "1996"]}
+{"id": 10, "original_prompt": "what is the big gold dome in jerusalem", "ground_truth": ["Dome of the Rock"]}
+{"id": 11, "original_prompt": "all the motor neurons that control the skeletal muscles are", "ground_truth": ["efferent nerves", "Somatic motor neurons", "Somatic"]}
+{"id": 12, "original_prompt": "the region that stretches between the black and caspian seas", "ground_truth": ["The Caucasus Mountains", "Caucasus Mountains"]}
+{"id": 13, "original_prompt": "what does the m number mean on a pint glass", "ground_truth": ["imperial fluid ounces", "the manufacturing company or site"]}
+{"id": 14, "original_prompt": "when did the dallas cowboys win their last playoff game", "ground_truth": ["2014", "2016"]}
+{"id": 15, "original_prompt": "who sang the theme song for laverne and shirley", "ground_truth": ["Cyndi Grecco"]}
+{"id": 16, "original_prompt": "who plays the judge in drop dead diva", "ground_truth": ["Lex Medlin"]}
+{"id": 17, "original_prompt": "the art and science of making objects from clay is called", "ground_truth": ["Ceramic art", "Ceramic"]}
+{"id": 18, "original_prompt": "what was the united states foreign policy after ww1 started", "ground_truth": ["neutrality"]}
+{"id": 19, "original_prompt": "what is the largest magnitude earthquake that has occurred in the pacific northwest", "ground_truth": ["The 1700 Cascadia earthquake"]}
+{"id": 20, "original_prompt": "where was 2017 beauty and the beast filmed", "ground_truth": ["Surrey, United Kingdom"]}
+{"id": 21, "original_prompt": "who is the actor that plays ducky on ncis", "ground_truth": ["David McCallum"]}
+{"id": 22, "original_prompt": "when was catch me if you can made", "ground_truth": ["2002"]}
+{"id": 23, "original_prompt": "who played the female lead in the 1942 film casablanca", "ground_truth": ["romantic drama", "Ingrid Bergman"]}
+{"id": 24, "original_prompt": "when did i ain't mad at cha come out", "ground_truth": ["September 15, 1996"]}
+{"id": 25, "original_prompt": "who becomes chief resident on grey's anatomy season 7", "ground_truth": ["April Kepner M.D.", "Kepner"]}
+{"id": 26, "original_prompt": "when did the usa join world war one", "ground_truth": ["April 1917", "April 6, 1917", "in April 1917"]}
+{"id": 27, "original_prompt": "who has the most big ten championships in football", "ground_truth": ["Michigan"]}
+{"id": 28, "original_prompt": "when was the design period known as art deco", "ground_truth": ["1910–1939"]}
+{"id": 29, "original_prompt": "when were the first general elections held in independent india", "ground_truth": ["1951–52"]}
+{"id": 30, "original_prompt": "one piece episode 534 english dubbed release date", "ground_truth": ["February 5, 2012"]}
+{"id": 31, "original_prompt": "a request to the supreme court that it review a case that was already decided is made via a(n)", "ground_truth": ["a writ of certiorari", "writ of certiorari"]}
+{"id": 32, "original_prompt": "when did the first ice age come out", "ground_truth": ["2002", "March 15, 2002"]}
+{"id": 33, "original_prompt": "when did the golden state warriors win the finals", "ground_truth": ["1947", "1975", "1956", "2015", "2017"]}
+{"id": 34, "original_prompt": "how many episodes are in season 7 of pretty little liars", "ground_truth": ["20"]}
+{"id": 35, "original_prompt": "who plays dr. sloan on kevin saves the world", "ground_truth": ["Richard Masur"]}
+{"id": 36, "original_prompt": "what is the 180 degree line of longitude called", "ground_truth": ["180th meridian or antimeridian", "180th meridian", "antimeridian"]}
+{"id": 37, "original_prompt": "who wrote the music phantom of the opera", "ground_truth": ["Andrew Lloyd Webber"]}
+{"id": 38, "original_prompt": "what is the name of the skin between your nostrils", "ground_truth": ["the nasal septum", "septum"]}
+{"id": 39, "original_prompt": "which site of an enzyme is called allosteric site", "ground_truth": ["regulatory site"]}
+{"id": 40, "original_prompt": "batman and robin episode only fools and horses", "ground_truth": ["\"Heroes and Villains\""]}
+{"id": 41, "original_prompt": "where do kidneys for kidney transplant come from", "ground_truth": ["living-donor"]}
+{"id": 42, "original_prompt": "when did the movie peter pan come out", "ground_truth": ["2003", "25 December 2003"]}
+{"id": 43, "original_prompt": "when was the last time michigan basketball won the championship", "ground_truth": ["1989"]}
+{"id": 44, "original_prompt": "if there is a line that lies parallel to the horizon it is said to be", "ground_truth": ["A vanishing point"]}
+{"id": 45, "original_prompt": "who sang the american anthem at the super bowl", "ground_truth": ["Pink"]}
+{"id": 46, "original_prompt": "what has been the origin of most classical dances of india", "ground_truth": ["the Sanskrit text Natya Shastra", "Natya Shastra", "The Natya Shastra"]}
+{"id": 47, "original_prompt": "who sings i can't take my eyes off of you", "ground_truth": ["Frankie Valli"]}
+{"id": 48, "original_prompt": "who was the first to say i'm going to disney world", "ground_truth": ["Jeana Yeager", "Phil Simms", "Dick Rutan"]}
+{"id": 49, "original_prompt": "where is the new football stadium in atlanta", "ground_truth": ["Mercedes-Benz Stadium"]}
+{"id": 50, "original_prompt": "georgia out of angus thongs and perfect snogging", "ground_truth": ["Georgia Groome as Georgia Nicolson", "Georgia Groome"]}
+{"id": 51, "original_prompt": "when does shadowhunters season 2 episode 17 come out", "ground_truth": ["February 13, 2017", "January 23, 2017", "July 24, 2017"]}
+{"id": 52, "original_prompt": "who sang the song you got a friend in me", "ground_truth": ["Lyle Lovett", "Randy Newman"]}
+{"id": 53, "original_prompt": "when did the botswana currency first come into circulation", "ground_truth": ["1976"]}
+{"id": 54, "original_prompt": "total goals scored by ronaldo in la liga", "ground_truth": ["309"]}
+{"id": 55, "original_prompt": "star wars the clone wars season 3 episode 1", "ground_truth": ["Clone Cadets"]}
+{"id": 56, "original_prompt": "nodding your head no is an example of", "ground_truth": ["a gesture"]}
+{"id": 57, "original_prompt": "what type of planet is neptune known as", "ground_truth": ["giant", "ice giants"]}
+{"id": 58, "original_prompt": "what age do you need to be to buy a bb gun", "ground_truth": ["18"]}
+{"id": 59, "original_prompt": "what is the meaning of auv in cars", "ground_truth": ["action utility vehicles"]}
+{"id": 60, "original_prompt": "when is the last time wisconsin missed the ncaa tournament", "ground_truth": ["1997–98"]}
+{"id": 61, "original_prompt": "kings and queens of england in the 1900s", "ground_truth": ["George V", "George VI", "Edward VIII", "Elizabeth II", "Edward VII"]}
+{"id": 62, "original_prompt": "who used to present i'm a celebrity now", "ground_truth": ["Ant & Dec"]}
+{"id": 63, "original_prompt": "where did the french immigrants settle in texas", "ground_truth": ["1685", "Arenosa Creek", "present-day southeastern Texas", "Matagorda Bay"]}
+{"id": 64, "original_prompt": "where does the synthesis of new dna from existing dna occurs", "ground_truth": ["origins of replication"]}
+{"id": 65, "original_prompt": "when did cybermen first appear in doctor who", "ground_truth": ["in 1966", "1966"]}
+{"id": 66, "original_prompt": "when does elena turn into a vampire in the tv series", "ground_truth": ["season four", "fourth season"]}
+{"id": 67, "original_prompt": "who sings oh what a night late december back in 63", "ground_truth": ["the Four Seasons"]}
+{"id": 68, "original_prompt": "which is the first private medical college in kerala", "ground_truth": ["Government Medical College, Thiruvananthapuram", "1998"]}
+{"id": 69, "original_prompt": "ethiopia flight 961 crashes in to the sea", "ground_truth": ["23 November 1996"]}
+{"id": 70, "original_prompt": "who produced the movie i can only imagine", "ground_truth": ["Pete Shilaimon", "Raymond Harris", "Daryl Lefever", "Kevin Downes", "Cindy Bond", "Joe Knopp", "Mickey Liddell"]}
+{"id": 71, "original_prompt": "only player to play for manchester united manchester city liverpool and everton", "ground_truth": ["Peter Andrew Beardsley", "Peter Andrew Beardsley MBE"]}
+{"id": 72, "original_prompt": "who is singing in something just like this", "ground_truth": ["Will Champion", "Coldplay", "The Chainsmokers", "Chris Martin"]}
+{"id": 73, "original_prompt": "when did clifford the big red dog first air on tv", "ground_truth": ["September 4, 2000"]}
+{"id": 74, "original_prompt": "who plays janie in the search for santa paws", "ground_truth": ["G. Hannelius"]}
+{"id": 75, "original_prompt": "what is the legal age for marriage in australia", "ground_truth": ["18"]}
+{"id": 76, "original_prompt": "who won season 5 of hell's kitchen", "ground_truth": ["Executive Chef Danny Veltri", "Danny Veltri"]}
+{"id": 77, "original_prompt": "who explored waters of cuba the bahamas and hispaniola", "ground_truth": ["Christopher Columbus"]}
+{"id": 78, "original_prompt": "where in the constitution is the executive branch referenced", "ground_truth": ["Article Two"]}
+{"id": 79, "original_prompt": "who sings the theme song for living single", "ground_truth": ["Queen Latifah"]}
+{"id": 80, "original_prompt": "who played in the stanley cup finals last year", "ground_truth": ["Nashville Predators", "Pittsburgh Penguins"]}
+{"id": 81, "original_prompt": "who is the largest supermarket chain in the uk", "ground_truth": ["Aldi", "Tesco"]}
+{"id": 82, "original_prompt": "when did lionel messi play his first game for barcelona", "ground_truth": ["2002", "2001", "October 2004"]}
+{"id": 83, "original_prompt": "who wins america's next top model cycle 20", "ground_truth": ["Jourdan Miller"]}
+{"id": 84, "original_prompt": "actress who plays penelope garcia on criminal minds", "ground_truth": ["Kirsten Simone Vangsness"]}
+{"id": 85, "original_prompt": "when was i can only imagine the song released", "ground_truth": ["1999", "2001"]}
+{"id": 86, "original_prompt": "when does season 18 of law and order svu start", "ground_truth": ["September 21, 2016"]}
+{"id": 87, "original_prompt": "name the four major layers of the earth in order", "ground_truth": ["a liquid outer core", "an outer silicate solid crust", "a highly viscous mantle", "a solid inner core"]}
+{"id": 88, "original_prompt": "how many episodes in adventure time season 1", "ground_truth": ["26"]}
+{"id": 89, "original_prompt": "who is the girl in green day 21 guns", "ground_truth": ["Lisa Stelly"]}
+{"id": 90, "original_prompt": "what episode does lori die on the walking dead", "ground_truth": ["\"Killer Within\"", "Killer Within"]}
+{"id": 91, "original_prompt": "is greenland part of europe or north america", "ground_truth": ["North America"]}
+{"id": 92, "original_prompt": "where is wake forest located in north carolina", "ground_truth": ["78.51889°W", "in Franklin and Wake counties", "35.97333°N"]}
+{"id": 93, "original_prompt": "is aluminium a ferrous or non ferrous metal", "ground_truth": ["non-ferrous"]}
+{"id": 94, "original_prompt": "where did the dewey decimal system come from", "ground_truth": ["Melvil Dewey"]}
+{"id": 95, "original_prompt": "who is the leader of the ontario pc party", "ground_truth": ["Patrick Brown", "Patrick Walter Brown MPP", "Patrick Walter Brown"]}
+{"id": 96, "original_prompt": "when did the eagles win the super bowl", "ground_truth": ["2017"]}
+{"id": 97, "original_prompt": "who used the word physiology for the first time", "ground_truth": ["Jean Fernel"]}
+{"id": 98, "original_prompt": "what season does bart bass die in gossip girl", "ground_truth": [")"]}
+{"id": 99, "original_prompt": "where is the oldest house in america located", "ground_truth": ["Taos Pueblo"]}
+{"id": 100, "original_prompt": "the general term for software that is designed to damage disable or steal data is", "ground_truth": ["Malware"]}
