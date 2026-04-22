@@ -1,8 +1,39 @@
+<<<<<<< HEAD
 /copilot_context
 /data/raw/*.jsonl
 /models/*.gguf
 /.venv
 /venv
+=======
+copilot_context/
+copilot_context.zip
+
+# Project generated artifacts (datasets, models, outputs, caches)
+data/raw/
+data/processed/
+results/
+models/*.gguf
+models/.cache/
+.tmp/
+.pip-cache/
+*.jsonl
+*.parquet
+*.arrow
+*.bin
+*.pt
+*.pth
+*.safetensors
+
+# Hugging Face / Transformers / Torch caches
+.cache/huggingface/
+.cache/torch/
+~/.cache/huggingface/
+~/.cache/torch/
+
+# Notebook/runtime local artifacts
+notebooks/.ipynb_checkpoints/
+nltk_data/
+>>>>>>> 2c641dd (feat: Full project scaffold)
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
