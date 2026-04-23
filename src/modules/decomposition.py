@@ -1,32 +1,11 @@
-<<<<<<< HEAD
-"""Prompt decomposition module.
-
-Implements decomposition scaffolding inspired by ParallelPrompt (Kolawole et al.,
-NeurIPS 2025).
-=======
 """Prompt decomposition for distributed inference.
 
 Implements the decomposition stage inspired by ParallelPrompt (Kolawole et al.,
 NeurIPS 2025) with robust fallback logic for constrained CPU settings.
->>>>>>> 2c641dd (feat: Full project scaffold)
 """
 
 from __future__ import annotations
 
-<<<<<<< HEAD
-from typing import Any, Dict, List
-
-
-def decompose_prompt(prompt: str, llm: Any) -> List[Dict[str, Any]]:
-    """Decompose a prompt into independent subtasks.
-
-    Args:
-        prompt: Original user prompt.
-        llm: Llama model handle.
-
-    Returns:
-        A list of subtask dictionaries.
-=======
 import json
 import logging
 import re
@@ -44,49 +23,10 @@ def decompose_prompt(prompt: str, llm: Any | None = None) -> List[Dict[str, Any]
 
     Returns:
         List of subtask dictionaries with id/text/dependencies/parallel_safe.
->>>>>>> 2c641dd (feat: Full project scaffold)
     """
     if not isinstance(prompt, str) or not prompt.strip():
         raise ValueError("prompt must be a non-empty string")
 
-<<<<<<< HEAD
-    return [
-        {
-            "id": 0,
-            "text": prompt.strip(),
-            "dependencies": [],
-            "parallel_safe": True,
-        }
-    ]
-
-
-def check_dependencies(subtasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Validate dependency hints across subtasks.
-
-    Args:
-        subtasks: List of extracted subtasks.
-
-    Returns:
-        Subtasks with dependency metadata preserved.
-    """
-    if not isinstance(subtasks, list):
-        raise ValueError("subtasks must be a list")
-    return subtasks
-
-
-def merge_dependent_subtasks(subtasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Merge subtasks marked as dependent.
-
-    Args:
-        subtasks: Subtasks possibly containing dependency links.
-
-    Returns:
-        Merged subtask list.
-    """
-    if not isinstance(subtasks, list):
-        raise ValueError("subtasks must be a list")
-    return subtasks
-=======
     subtasks: List[Dict[str, Any]] = []
     if llm is not None:
         subtasks = _try_llm_decomposition(prompt=prompt, llm=llm)
@@ -251,4 +191,3 @@ def _merge_group(group: List[Dict[str, Any]], new_id: int) -> Dict[str, Any]:
         "dependencies": [],
         "parallel_safe": False,
     }
->>>>>>> 2c641dd (feat: Full project scaffold)

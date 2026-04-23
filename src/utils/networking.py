@@ -1,58 +1,18 @@
-<<<<<<< HEAD
-"""Networking utilities for node health checks and subtask dispatch."""
-=======
 """Networking utilities for cluster communication.
 
 Provides RTT checks and worker request helpers over HTTP for distributed
 execution. Serial baseline uses only health/feasibility checks.
 """
->>>>>>> 2c641dd (feat: Full project scaffold)
 
 from __future__ import annotations
 
 import asyncio
-<<<<<<< HEAD
-import platform
-import subprocess
-=======
 import time
->>>>>>> 2c641dd (feat: Full project scaffold)
 from typing import Any, Dict
 
 import httpx
 
 
-<<<<<<< HEAD
-def ping_node(ip: str) -> float:
-    """Ping a node and return RTT in milliseconds, or -1 if unavailable."""
-    if not isinstance(ip, str) or not ip.strip():
-        raise ValueError("ip must be a non-empty string")
-
-    count_flag = "-n" if platform.system().lower() == "windows" else "-c"
-    command = ["ping", count_flag, "1", ip]
-
-    try:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=3, check=False)
-    except Exception:
-        return -1.0
-
-    output = (result.stdout or "") + (result.stderr or "")
-    marker = "time="
-    idx = output.find(marker)
-    if idx == -1:
-        return -1.0
-
-    rest = output[idx + len(marker) :]
-    number = ""
-    for ch in rest:
-        if ch.isdigit() or ch == ".":
-            number += ch
-        else:
-            break
-
-    try:
-        return float(number)
-=======
 def ping_node(ip: str, timeout_s: float = 2.0) -> float:
     """Ping worker health endpoint and return RTT in milliseconds.
 
@@ -74,17 +34,10 @@ def ping_node(ip: str, timeout_s: float = 2.0) -> float:
             return -1.0
         elapsed_ms = (time.perf_counter() - started_at) * 1000.0
         return float(elapsed_ms)
->>>>>>> 2c641dd (feat: Full project scaffold)
     except Exception:
         return -1.0
 
 
-<<<<<<< HEAD
-async def send_subtask(ip: str, port: int, subtask: Dict[str, Any], timeout_s: float = 30.0) -> Dict[str, Any]:
-    """Send a subtask to worker /infer endpoint."""
-    if timeout_s <= 0:
-        raise ValueError("timeout_s must be positive")
-=======
 async def send_subtask(
     ip: str,
     port: int,
@@ -108,7 +61,6 @@ async def send_subtask(
         raise ValueError("port must be > 0")
     if not isinstance(subtask, dict):
         raise ValueError("subtask must be a dictionary")
->>>>>>> 2c641dd (feat: Full project scaffold)
 
     url = f"http://{ip}:{port}/infer"
     async with httpx.AsyncClient(timeout=timeout_s) as client:
@@ -118,11 +70,6 @@ async def send_subtask(
 
 
 def check_network_feasibility(ip: str, threshold_ms: float = 100.0) -> bool:
-<<<<<<< HEAD
-    """Check if network RTT is below threshold for parallel execution."""
-    rtt = ping_node(ip)
-    return rtt >= 0.0 and rtt <= threshold_ms
-=======
     """Check if RTT is within acceptable threshold.
 
     Args:
@@ -152,4 +99,3 @@ def send_subtask_sync(ip: str, port: int, subtask: Dict[str, Any], timeout_s: fl
         Worker JSON result.
     """
     return asyncio.run(send_subtask(ip=ip, port=port, subtask=subtask, timeout_s=timeout_s))
->>>>>>> 2c641dd (feat: Full project scaffold)

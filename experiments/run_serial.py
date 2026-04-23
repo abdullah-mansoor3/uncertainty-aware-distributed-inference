@@ -1,36 +1,12 @@
-<<<<<<< HEAD
-"""Run serial inference experiment pipeline."""
-=======
 """Run the serial inference pipeline baseline.
 
 Pipeline: data loading -> decomposition -> serial scheduling -> local inference ->
 aggregation -> correctness metrics -> incremental JSONL logging.
 """
->>>>>>> 2c641dd (feat: Full project scaffold)
 
 from __future__ import annotations
 
 import argparse
-<<<<<<< HEAD
-import logging
-
-
-def parse_args() -> argparse.Namespace:
-    """Parse CLI arguments for serial experiment."""
-    parser = argparse.ArgumentParser(description="Run serial pipeline")
-    parser.add_argument("--config", required=True, help="Path to cluster config")
-    parser.add_argument("--dataset", required=True, help="Path to input jsonl")
-    parser.add_argument("--output", required=True, help="Path to output jsonl")
-    return parser.parse_args()
-
-
-def main() -> None:
-    """Entry point for serial experiment execution."""
-    args = parse_args()
-    logging.basicConfig(level=logging.INFO)
-    logging.info("Serial scaffold ready")
-    logging.info("config=%s dataset=%s output=%s", args.config, args.dataset, args.output)
-=======
 import json
 import logging
 import random
@@ -40,13 +16,15 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 import numpy as np
+import spacy
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.modules.aggregator import merge_outputs
+from src.modules.aggregator import aggregate_attributions, merge_outputs
 from src.modules.decomposition import decompose_prompt
+from src.modules.explanation import compute_local_attribution
 from src.modules.inference import generate, load_model
 from src.modules.uncertainty import compute_erce, compute_pro_score
 from src.scheduler.serial import SerialScheduler
@@ -125,6 +103,19 @@ def append_jsonl(path: Path, record: Dict[str, Any]) -> None:
         handle.flush()
 
 
+def load_nlp_pipeline() -> Any:
+    """Load spaCy parser used for SyntaxShap-style attribution approximation.
+
+    Returns:
+        Loaded spaCy pipeline or lightweight fallback pipeline.
+    """
+    try:
+        return spacy.load("en_core_web_sm")
+    except Exception as error:
+        LOGGER.warning("Failed to load en_core_web_sm (%s). Falling back to spacy.blank('en').", error)
+        return spacy.blank("en")
+
+
 def main() -> None:
     """Execute serial pipeline over all dataset samples.
 
@@ -150,6 +141,7 @@ def main() -> None:
         n_ctx=int(model_config["n_ctx"]),
         logprobs=int(model_config["logprobs"]),
     )
+    nlp = load_nlp_pipeline()
 
     samples = load_dataset(args.dataset)
     scheduler = SerialScheduler()
@@ -170,6 +162,7 @@ def main() -> None:
         scheduled_subtasks = scheduler.schedule(subtasks)
 
         outputs: List[str] = []
+        attribution_vectors: List[List[Dict[str, float]]] = []
         uncertainty_scores: List[float] = []
         node_latency_total = 0
 
@@ -198,11 +191,24 @@ def main() -> None:
                 max_inference_ms=int(model_config["max_inference_ms"]),
             )
             outputs.append(generation["text"])
+            # SyntaxShap is intentionally approximate here for CPU feasibility (instructions.txt Section 12).
+            try:
+                local_attribution = compute_local_attribution(
+                    subtask=subtask["text"],
+                    output=generation["text"],
+                    llm=llm,
+                    nlp=nlp,
+                )
+            except Exception as error:
+                LOGGER.warning("Local attribution failed for subtask id=%s: %s", subtask.get("id"), error)
+                local_attribution = []
+            attribution_vectors.append(local_attribution)
             uncertainty_scores.append(pro_score)
             pro_scores.append(pro_score)
             node_latency_total += int(probe.get("latency_ms", 0)) + int(generation.get("latency_ms", 0))
 
         merged_output = merge_outputs(outputs, [item["id"] for item in scheduled_subtasks])
+        global_attribution = aggregate_attributions(attribution_vectors, uncertainty_scores)
         rouge = compute_rouge(merged_output, references)
         meteor = compute_meteor(merged_output, references)
         bleu = compute_bleu(merged_output, references)
@@ -223,7 +229,8 @@ def main() -> None:
             "uncertainty_scores": uncertainty_scores,
             "outputs": outputs,
             "merged_output": merged_output,
-            "attribution_vectors": [],
+            "attribution_vectors": attribution_vectors,
+            "global_attribution": global_attribution,
             "correctness": {
                 "rouge1": rouge["rouge1"],
                 "rougeL": rouge["rougeL"],
@@ -248,7 +255,6 @@ def main() -> None:
     LOGGER.info("Latency mean=%.2f p95=%.2f p99=%.2f", latency_stats["mean"], latency_stats["p95"], latency_stats["p99"])
     LOGGER.info("Mean PRO score: %.4f", float(np.nanmean(np.array(pro_scores, dtype=float))))
     LOGGER.info("ERCE: %.4f", erce_value)
->>>>>>> 2c641dd (feat: Full project scaffold)
 
 
 if __name__ == "__main__":

@@ -1,25 +1,11 @@
 nodes:
   master:
-<<<<<<< HEAD
-    ip: "100.x.x.x"
-=======
     ip: "127.0.0.1"
->>>>>>> 2c641dd (feat: Full project scaffold)
     port: 8000
     n_threads: 12
     ram_gb: 16
     role: "master"
   worker:
-<<<<<<< HEAD
-    ip: "100.x.x.x"
-    port: 8001
-    n_threads: 4
-    ram_gb: 8
-    role: "worker"
-
-model:
-  path: "./models/llama-3.2-3b-q4_k_m.gguf"
-=======
     ip: "127.0.0.1"
     port: 8001
     n_threads: 4
@@ -28,16 +14,12 @@ model:
 
 model:
   path: "./models/llama-3.2-3b-instruct-q4_k_m.gguf"
->>>>>>> 2c641dd (feat: Full project scaffold)
   n_ctx: 2048
   max_tokens: 256
   temperature: 0.6
   top_p: 0.9
   logprobs: 10
-<<<<<<< HEAD
-=======
   max_inference_ms: 120000
->>>>>>> 2c641dd (feat: Full project scaffold)
 
 scheduler:
   uncertainty_threshold: 0.5
@@ -52,9 +34,6 @@ datasets:
 evaluation:
   n_bins: 10
   correctness_metric: "rouge1"
-<<<<<<< HEAD
-=======
 
 runtime:
   random_seed: 42
->>>>>>> 2c641dd (feat: Full project scaffold)

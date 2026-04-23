@@ -1,72 +1,101 @@
 # Uncertainty-Aware Adaptive Distributed Inference on Heterogeneous CPU Clusters
 
-This repository contains the ANN + PDC project implementation for inference-only LLM evaluation on heterogeneous CPU nodes.
+Inference-only ANN + PDC project for comparing three pipelines on heterogeneous CPU nodes:
 
-## What this project does
+- Serial baseline (single-node master execution)
+- Naive parallel (round-robin assignment)
+- Uncertainty-aware parallel (PRO-based routing + RTT fallback)
 
-- Decomposes prompts into subtasks.
-- Estimates uncertainty using PRO-style probability entropy.
-- Runs serial baseline inference (and supports extension to parallel schedulers).
-- Evaluates output quality and calibration behavior.
-- Logs reproducible per-sample JSONL records for analysis.
+## Current implementation status
 
-## Core components
+Implemented end-to-end:
 
-- `src/modules/decomposition.py`: prompt decomposition + fallback splitter.
-- `src/modules/inference.py`: GGUF model load/generate wrapper over `llama-cpp-python`.
-- `src/modules/uncertainty.py`: PRO score + calibration utilities.
-- `src/modules/aggregator.py`: output/attribution merge helpers.
-- `src/scheduler/serial.py`: serial baseline scheduler.
-- `src/utils/metrics.py`: ROUGE/BLEU/METEOR/BERT/latency utilities.
-- `experiments/run_serial.py`: end-to-end serial experiment runner.
+- Prompt decomposition with LLM-first JSON extraction and rule-based fallback.
+- PRO uncertainty scoring from token log-probability entropy.
+- Serial, naive parallel, and uncertainty-aware experiment runners.
+- Worker FastAPI server for remote subtask execution.
+- Local token attribution plus master-side attribution aggregation.
+- Per-sample incremental JSONL result logging.
 
-## Repository structure
+Partially paper-parity (known approximations):
 
-```text
-uncertainty-aware-distributed-inference/
-├── configs/
-│   └── cluster_config.yaml
-├── data/
-│   ├── raw/                     # ignored in git (downloaded artifacts)
-│   ├── processed/               # ignored in git (generated JSONL)
-│   └── download_datasets.py
-├── experiments/
-│   └── run_serial.py
-├── models/
-│   ├── download_models.sh
-│   └── *.gguf                   # ignored in git
-├── notebooks/
-│   └── pro_rank_calibration.ipynb
-├── results/                     # ignored in git
-├── src/
-├── tests/
-├── requirements.txt
-└── README.md
-```
+- ERCE and AUROC are implemented, but AUARC/AUPRC are not yet implemented.
+- Dependency detection in decomposition is heuristic lexical overlap.
+- SyntaxShap attribution is an approximation (not full Shapley), by design for CPU feasibility.
 
-## Environment setup
+## Metric coverage by pipeline
 
-1. Create and activate virtual environment.
-2. Install dependencies:
+All three runners log and/or summarize the same core evaluation dimensions:
+
+- Correctness: ROUGE-1, ROUGE-L, METEOR, BLEU, BERTScore
+- Latency: per-sample latency and node-level latency totals
+- Uncertainty: PRO score per subtask
+- Calibration diagnostics: ERCE, AUROC (run summary level)
+- Attribution: local attribution vectors (all pipelines) and aggregated global attribution
+
+Result files:
+
+- results/results_serial.jsonl
+- results/results_naive.jsonl
+- results/results_adaptive.jsonl
+
+## Repository map
+
+- src/modules/decomposition.py
+- src/modules/uncertainty.py
+- src/modules/inference.py
+- src/modules/explanation.py
+- src/modules/aggregator.py
+- src/scheduler/serial.py
+- src/scheduler/naive.py
+- src/scheduler/uncertainty_aware.py
+- src/worker/worker_server.py
+- experiments/run_serial.py
+- experiments/run_naive.py
+- experiments/run_adaptive.py
+
+## Setup
+
+1) Create environment and install requirements.
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-3. Download model weights:
+2) Install runtime extras used by worker/inference flow if missing.
+
+```bash
+pip install uvicorn
+python -m spacy download en_core_web_sm
+```
+
+3) Download model.
 
 ```bash
 export HF_TOKEN=hf_xxx
 bash models/download_models.sh
 ```
 
-4. Download and preprocess datasets:
+4) Prepare datasets (canonical JSONL).
 
 ```bash
-python data/download_datasets.py --samples 100 --seed 42
+python experiments/prepare_datasets.py --sample-size 100 --seed 42
 ```
 
-## Run serial baseline
+## Configuration before distributed runs
+
+Edit configs/cluster_config.yaml with your actual two-node values:
+
+- Replace localhost IPs with Tailscale IPs for master/worker.
+- Keep worker port aligned with worker server launch port.
+- Ensure model.path points to the downloaded GGUF file.
+- Keep scheduler thresholds aligned with your experiment protocol.
+
+## Running experiments
+
+Serial baseline:
 
 ```bash
 python experiments/run_serial.py \
@@ -75,104 +104,61 @@ python experiments/run_serial.py \
   --output results/results_serial.jsonl
 ```
 
-## Notebook workflow (ANN Assignment 3)
-
-Use `notebooks/pro_rank_calibration.ipynb` for a standalone workflow that can:
-
-- download full datasets,
-- create configurable subset files,
-- download GGUF model weights,
-- run generation pipeline from scratch,
-- compute PRO + baseline uncertainty columns,
-- report ERCE/AUROC comparisons.
-
-It is designed to run on Colab or local Jupyter.
-
-## Configuration
-
-All runtime parameters are centralized in `configs/cluster_config.yaml`:
-
-- model path and decoding params,
-- node specs and thread counts,
-- scheduler thresholds,
-- evaluation settings.
-
-## Testing
+Start worker (on node_b):
 
 ```bash
-pytest -q
+python -m uvicorn src.worker.worker_server:app --host 0.0.0.0 --port 8001
 ```
 
-## Git hygiene
+Naive parallel (on node_a):
 
-Large and generated files are intentionally excluded in `.gitignore`, including:
+```bash
+python experiments/run_naive.py \
+  --config configs/cluster_config.yaml \
+  --dataset data/processed/nq_open_100.jsonl \
+  --output results/results_naive.jsonl
+```
 
-- downloaded datasets,
-- processed JSONL outputs,
-- GGUF model weights,
-- local caches,
-- `copilot_context/` reference materials.
+Uncertainty-aware parallel (on node_a):
 
-This keeps the repository lightweight and safe to push to GitHub.
+```bash
+python experiments/run_adaptive.py \
+  --config configs/cluster_config.yaml \
+  --dataset data/processed/nq_open_100.jsonl \
+  --output results/results_adaptive.jsonl
+```
 
-## Paper fidelity and explicit deviations
+Repeat each pipeline for:
 
-This project is implemented to be as close as possible to the base-paper logic described in `copilot_context/instructions.txt`.
+- data/processed/nq_open_100.jsonl
+- data/processed/mmlu_pro_100.jsonl
+- data/processed/synthetic_prompts.jsonl
 
-### 1) PRO (Nguyen et al., 2025)
+## Analysis workflow
 
-Implemented (paper-aligned):
-- Uses top-K log-probabilities and entropy normalization $H/\log K$.
-- Uses adaptive-K filtering by removing very low probabilities.
-- Uses probe inference before full generation in pipeline flow.
-- Uses thresholded uncertainty classification (`tau=0.5` default/configurable).
+Use notebooks for visual analysis:
 
-Custom/approximate logic (explicit):
-- PRO extraction currently uses first-token top-K alternatives from `llama-cpp-python` completion objects when available (fallback to token logprobs if top-K map is unavailable).
-- This is a practical API-level approximation, not a full reimplementation of all internals from the original paper code.
+- notebooks/analysis.ipynb
+- notebooks/pro_rank_calibration.ipynb
 
-### 2) Rank-Calibration (Huang et al., EMNLP 2024)
+Compare across pipelines:
 
-Implemented (paper-aligned intent):
-- ERCE-style calibration error over ranked uncertainty.
-- AUROC for uncertainty-as-error ranking quality.
+- Mean/P95/P99 latency
+- Correctness metrics (ROUGE/METEOR/BLEU/BERTScore)
+- PRO-calibration behavior (ERCE, AUROC)
+- Attribution consistency/coherence trends
 
-Custom/approximate logic (explicit):
-- ERCE/AUROC operate on available correctness proxy (`rouge1` default in this repo) rather than every metric setting from the original paper suite.
-- Current repo computes ERCE/AUROC directly; AUARC/AUPRC are planned next for full parity with broader rank-calibration reporting.
+## Relation to base papers and reports
 
-### 3) ParallelPrompt-inspired decomposition (Kolawole et al., 2025)
+This implementation follows the project specification derived from:
 
-Implemented (paper-aligned intent):
-- JSON schema-guided LLM decomposition first.
-- Fallback decomposition when JSON parsing/LLM output fails.
-- Dependency check and serial-only merge behavior.
+- copilot_context/base_papers/PARALLELPROMPT.pdf
+- copilot_context/base_papers/Probabilities Are All You Need.pdf
+- copilot_context/base_papers/Uncertainty in Language Models: Assessment through Rank-Calibration.pdf
+- copilot_context/base_papers/SYNTAXSHAP.pdf
 
-Custom/approximate logic (explicit):
-- Dependency detection currently uses lexical-overlap heuristics rather than full entity/output-conditional dependency analysis from the paper ecosystem.
+and your report set under:
 
-### 4) SyntaxShap / Token-level attribution
+- copilot_context/our_reports/
 
-Implemented:
-- Project structure and interfaces exist for local and aggregated attribution modules.
-
-Custom/approximate logic (explicit):
-- Full SyntaxShap coalition machinery is not yet fully integrated into end-to-end experiment runners.
-
-### About base-paper repositories
-
-- I attempted to auto-discover GitHub repository links from the local paper PDFs in this environment but could not reliably extract them from embedded PDF text streams.
-- Alignment here therefore follows your project instruction spec and paper formulas/logic represented in your context files.
-
-## TODO (implemented vs remaining)
-
-- [x] Serial pipeline with decomposition, inference, uncertainty scoring, and JSONL logging.
-- [x] PRO score via normalized top-K entropy with probe inference path.
-- [x] Full dataset download + subset generation workflow in notebook.
-- [x] Colab-ready standalone notebook pipeline (`notebooks/pro_rank_calibration.ipynb`).
-- [x] Git hygiene for datasets/models/caches/context artifacts.
-- [ ] Add AUARC and AUPRC metrics with report-ready tables across datasets.
-- [ ] Implement and benchmark naive parallel scheduler end-to-end.
-- [ ] Implement and benchmark uncertainty-aware distributed scheduler end-to-end.
-- [ ] Integrate full SyntaxShap-style attribution into experiment runner outputs.
-- [ ] Add network RTT fallback experiments and comparative latency/quality analysis.
+The core project purpose is implemented: run as-is serial inference, then decomposition-driven distributed inference, then compare quality/latency/calibration/attribution outcomes across the three pipelines.
