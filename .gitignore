@@ -1,9 +1,11 @@
 copilot_context/
 copilot_context.zip
-
+report.md
+output/
 # Project generated artifacts (datasets, models, outputs, caches)
 data/raw/
 data/processed/
+output/
 results/
 models/*.gguf
 models/.cache/
