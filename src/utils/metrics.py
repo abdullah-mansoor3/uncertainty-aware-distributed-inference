@@ -1,14 +1,27 @@
 """Evaluation metrics for correctness and latency.
-
 Provides ROUGE, BLEU, METEOR, BERTScore wrappers and latency summary helpers for
 experiment reporting.
 """
-
 from __future__ import annotations
 
 from typing import Dict, List
 
 import numpy as np
+
+# BERTScorer cached at module level — loaded once per process, never per sample.
+# Loading roberta-large on every call adds 10-20s per sample.
+_BERT_SCORER = None
+
+
+def _get_bert_scorer():
+    global _BERT_SCORER
+    if _BERT_SCORER is None:
+        try:
+            from bert_score import BERTScorer
+            _BERT_SCORER = BERTScorer(lang="en", rescale_with_baseline=False, verbose=False)
+        except Exception:
+            _BERT_SCORER = False  # sentinel so we don't retry every call
+    return _BERT_SCORER if _BERT_SCORER is not False else None
 
 
 def compute_rouge(prediction: str, references: List[str]) -> Dict[str, float]:
@@ -23,12 +36,10 @@ def compute_rouge(prediction: str, references: List[str]) -> Dict[str, float]:
     """
     if not prediction or not references:
         return {"rouge1": float("nan"), "rougeL": float("nan")}
-
     try:
         from rouge_score import rouge_scorer
     except Exception:
         return {"rouge1": float("nan"), "rougeL": float("nan")}
-
     scorer = rouge_scorer.RougeScorer(["rouge1", "rougeL"], use_stemmer=True)
     rouge1_scores = []
     rouge_l_scores = []
@@ -73,30 +84,34 @@ def compute_bleu(prediction: str, references: List[str]) -> float:
     if not prediction or not references:
         return float("nan")
     try:
-        from nltk.translate.bleu_score import sentence_bleu
+        from nltk.translate.bleu_score import SmoothingFunction, sentence_bleu
     except Exception:
         return float("nan")
     reference_tokens = [reference.split() for reference in references if reference]
     if not reference_tokens:
         return float("nan")
-    return float(sentence_bleu(reference_tokens, prediction.split()))
+    # SmoothingFunction avoids zero BLEU warnings on short outputs
+    smoother = SmoothingFunction().method1
+    return float(sentence_bleu(reference_tokens, prediction.split(), smoothing_function=smoother))
 
 
 def compute_bert_score(prediction: str, references: List[str]) -> float:
-    """Compute BERTScore F1 against references.
+    """Compute BERTScore F1 against references using cached scorer.
 
     Args:
         prediction: Generated text.
         references: Reference answers.
 
     Returns:
-        Mean BERTScore F1 or NaN if inputs are invalid.
+        Mean BERTScore F1 or NaN if inputs are invalid or scorer unavailable.
     """
     if not prediction or not references:
         return float("nan")
+    scorer = _get_bert_scorer()
+    if scorer is None:
+        return float("nan")
     try:
-        from bert_score import score as bert_score
-        _, _, f1_values = bert_score([prediction] * len(references), references, lang="en", verbose=False)
+        _, _, f1_values = scorer.score([prediction] * len(references), references)
         return float(f1_values.mean().item())
     except Exception:
         return float("nan")
@@ -113,7 +128,6 @@ def compute_latency_stats(latencies: List[float]) -> Dict[str, float]:
     """
     if not latencies:
         return {"mean": float("nan"), "p95": float("nan"), "p99": float("nan"), "max": float("nan")}
-
     latency_array = np.array(latencies, dtype=float)
     return {
         "mean": float(np.mean(latency_array)),
