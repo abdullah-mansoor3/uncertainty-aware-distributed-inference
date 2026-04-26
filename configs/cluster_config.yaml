@@ -11,3 +11,34 @@ nodes:
     n_threads: 2
     ram_gb: 4
     role: "worker"
+
+model:
+  path: "./models/llama-3.2-3b-instruct-q4_k_m.gguf"
+  n_ctx: 2048
+  max_tokens: 256
+  temperature: 0.0
+  top_p: 1.0
+  logprobs: 10
+  max_inference_ms: 300000
+  logits_all: true
+
+runtime:
+  random_seed: 42
+  decomposition_use_llm: true
+  enable_attribution: true
+  use_probe_for_pro: true
+
+scheduler:
+  uncertainty_threshold: 0.5
+  network_fallback_ms: 100.0
+  probe_tokens: 5
+
+datasets:
+  nq_open: "./data/processed/nq_open_100.jsonl"
+  mmlu_pro: "./data/processed/mmlu_pro_100.jsonl"
+  synthetic: "./data/processed/synthetic_prompts.jsonl"
+  parallelprompt: "./data/processed/parallelprompt_100.jsonl"
+
+evaluation:
+  n_bins: 10
+  correctness_metric: "rouge1"

@@ -54,13 +54,22 @@ def decompose_prompt(
     subtasks: List[Dict[str, Any]] = []
 
     # Path 2: try LLM extraction.
-    if not subtasks and llm is not None:
+    if llm is not None:
         subtasks = _try_llm_decomposition(prompt=prompt, llm=llm)
 
     # Path 3: rule-based fallback.
+    # If LLM returns only one task for an obviously decomposable prompt,
+    # prefer the richer rule-based decomposition.
+    rule_based_subtasks = _rule_based_split(prompt)
     if not subtasks:
         LOGGER.info("Decomposition fallback triggered for prompt.")
-        subtasks = _rule_based_split(prompt)
+        subtasks = rule_based_subtasks
+    elif len(subtasks) <= 1 < len(rule_based_subtasks):
+        LOGGER.debug(
+            "Overriding single-task LLM decomposition with rule-based split (%s tasks).",
+            len(rule_based_subtasks),
+        )
+        subtasks = rule_based_subtasks
 
     checked = check_dependencies(subtasks)
     return merge_dependent_subtasks(checked)
@@ -134,24 +143,30 @@ def merge_dependent_subtasks(subtasks: List[Dict[str, Any]]) -> List[Dict[str, A
         raise ValueError("subtasks must be a list")
 
     merged: List[Dict[str, Any]] = []
-    current_group: List[Dict[str, Any]] = []
+    index_to_group: Dict[int, int] = {}
 
-    for subtask in subtasks:
-        if subtask.get("dependencies"):
-            current_group.append(subtask)
-        else:
-            if current_group:
-                merged.append(_merge_group(current_group, len(merged)))
-                current_group = []
-            merged.append({
-                "id": len(merged),
-                "text": subtask["text"],
-                "dependencies": [],
-                "parallel_safe": True,
-            })
+    for index, subtask in enumerate(subtasks):
+        text = str(subtask.get("text", "")).strip()
+        if not text:
+            continue
 
-    if current_group:
-        merged.append(_merge_group(current_group, len(merged)))
+        # If this subtask depends on earlier subtasks, merge into that anchor group.
+        dependencies = [int(dep) for dep in subtask.get("dependencies", []) if int(dep) in index_to_group]
+        if dependencies:
+            group_index = index_to_group[dependencies[0]]
+            merged[group_index]["text"] = f"{merged[group_index]['text']} Then {text}"
+            merged[group_index]["parallel_safe"] = False
+            index_to_group[index] = group_index
+            continue
+
+        # New independent group.
+        merged.append({
+            "id": len(merged),
+            "text": text,
+            "dependencies": [],
+            "parallel_safe": True,
+        })
+        index_to_group[index] = len(merged) - 1
 
     if not merged:
         merged = [{"id": 0, "text": "", "dependencies": [], "parallel_safe": True}]
@@ -187,86 +202,140 @@ def _strip_markdown_fences(text: str) -> str:
     Returns:
         Cleaned string ready for JSON parsing.
     """
-    # Remove opening fence with optional language tag
     text = re.sub(r"^```(?:json)?\s*", "", text.strip(), flags=re.IGNORECASE)
-    # Remove closing fence
     text = re.sub(r"\s*```$", "", text.strip())
     return text.strip()
 
 
-def _try_llm_decomposition(prompt: str, llm: Any) -> List[Dict[str, Any]]:
-    """Extract parallel subtasks via LLM schema decomposition.
+def _parse_llm_item_list(text: str) -> List[str]:
+    """Parse a list of subtasks from LLM output text.
 
-    The instruction asks the model to identify the repeating data items in the prompt
-    and return each as a short independent task string. This matches the ParallelPrompt
-    schema approach (template + data list) without requiring the model to return the full
-    5-field schema — we just want the filled subtask strings.
-
-    Args:
-        prompt: Original user prompt.
-        llm: Model compatible with llama-cpp-python completion interface.
-
-    Returns:
-        Parsed subtask list or empty list on any failure.
+    This is intentionally robust for noisy outputs from llama-cpp-python. We prefer
+    strict JSON arrays, but also accept quoted item lists or line-separated items.
     """
-    # The instruction is carefully worded to handle both:
-    #   - data-list prompts: "Translate X, Y, Z" -> ["Translate X", "Translate Y", "Translate Z"]
-    #   - count prompts: "Generate 3 stories" -> ["Generate story 1", "Generate story 2", ...]
+    if not isinstance(text, str) or not text.strip():
+        return []
+
+    # Prefer the first JSON array if the model returns extra text.
+    array_match = re.search(r"\[.*\]", text, re.DOTALL)
+    candidate = array_match.group(0) if array_match else text
+
+    try:
+        parsed = json.loads(candidate)
+        if isinstance(parsed, list):
+            return [str(item).strip() for item in parsed if str(item).strip()]
+    except json.JSONDecodeError:
+        pass
+
+    quoted_items: List[str] = []
+    for match in re.findall(r'"([^"\n]{2,})"|\'([^\'\n]{2,})\'|“([^”\n]{2,})”|‘([^’\n]{2,})’', candidate):
+        item = next((group for group in match if group), "").strip()
+        if item:
+            quoted_items.append(item)
+    if len(quoted_items) >= 2:
+        return quoted_items
+
+    lines = [line.strip(' -•*"\'“”‘’') for line in candidate.splitlines() if line.strip()]
+    if len(lines) >= 2:
+        return [line for line in lines if len(line) > 2]
+
+    return []
+
+def _try_llm_decomposition(prompt: str, llm: Any) -> List[Dict[str, Any]]:
+    """Extract parallel subtasks via LLM with chain-of-thought and few-shot examples.
+ 
+    Key improvements over original:
+    - Chain-of-thought: model reasons about independence before outputting JSON
+    - More few-shot examples covering edge cases (single task, answer options, NER)
+    - Explicit negative examples so model learns what NOT to split
+    - JSON output is on its own line after reasoning, easier to extract
+    """
+ 
     instruction = (
-        "You are a task decomposition assistant. Your job is to identify the independent "
-        "parallel sub-tasks inside a prompt and return them as a JSON array of strings.\n\n"
+        "You are a task decomposition assistant. "
+        "Decide if a prompt contains multiple INDEPENDENT tasks that can run in parallel, "
+        "then output them as a JSON array.\n\n"
+ 
         "Rules:\n"
-        "- Each string in the array must be a complete, self-contained task.\n"
-        "- Tasks must be truly independent — no task should need the output of another.\n"
-        "- If the prompt lists N items to process with the same operation, return N tasks.\n"
-        "- If the prompt asks to generate N variations, return N generation requests.\n"
-        "- If the prompt cannot be decomposed, return a JSON array with one element.\n"
-        "- Return ONLY the JSON array. No explanation, no markdown, no extra text.\n\n"
-        f"Prompt to decompose:\n{prompt}\n\n"
-        "JSON array:"
+        "- Tasks are independent if each one can be completed WITHOUT the result of any other.\n"
+        "- Answer options / choices are NOT independent tasks. A question with options is ONE task.\n"
+        "- If the whole prompt is one task, return a JSON array with that one task as a string.\n"
+        "- Output ONLY the JSON array on the last line. No markdown, no extra text after the array.\n\n"
+ 
+        "--- EXAMPLES ---\n\n"
+ 
+        "Prompt: Translate each of these: [\"Hello\", \"Goodbye\", \"Thank you\"]\n"
+        "Reasoning: Three separate translation jobs, each fully independent.\n"
+        'Output: ["Translate: Hello", "Translate: Goodbye", "Translate: Thank you"]\n\n'
+ 
+        "Prompt: Rate each sentence 1-10: 1. The book is brown. 2. The book are brown.\n"
+        "Reasoning: Two independent rating tasks, one per sentence.\n"
+        'Output: ["Rate 1-10: The book is brown.", "Rate 1-10: The book are brown."]\n\n'
+ 
+        "Prompt: Extract all named entities from: Apple was founded by Steve Jobs in Cupertino.\n"
+        "Reasoning: One extraction task over one document. Cannot be split further.\n"
+        '["Extract named entities from: Apple was founded by Steve Jobs in Cupertino."]\n\n'
+ 
+        'Prompt: "Where is Paris?" Options are: "France", "Germany", "Italy". Choose one.\n'
+        "Reasoning: This is ONE question with answer options. Options are not independent tasks.\n"
+        '["Answer: Where is Paris? Options: France, Germany, Italy."]\n\n'
+ 
+        "Prompt: Extract every drug, its target, and mechanism from this document as "
+        "( drug | Target | mechanism ) triplets. Document mentions trastuzumab, pertuzumab, "
+        "and Les-4367.\n"
+        "Reasoning: Three drugs are mentioned, each triplet is independent.\n"
+        '["Extract triplet for trastuzumab", "Extract triplet for pertuzumab", "Extract triplet for Les-4367"]\n\n'
+ 
+        'Prompt: "What color is the sky?" The options are "red", "blue", "green", "yellow". Choose one.\n'
+        "Reasoning: ONE question asking to pick from options. Options are not independent tasks.\n"
+        '["Answer this question by choosing one option: What color is the sky? Options: red, blue, green, yellow."]\n\n'
+ 
+        "--- NOW DECOMPOSE THIS ---\n\n"
+ 
+        f"Prompt: {prompt}\n"
+        "Reasoning:"
     )
+ 
     try:
         completion = llm(
             instruction,
             max_tokens=512,
             temperature=0.0,
             top_p=1.0,
+            stop=None,
         )
         raw_text = completion["choices"][0]["text"].strip()
-
-        # Strip markdown fences — the most common failure mode
-        cleaned = _strip_markdown_fences(raw_text)
-
-        # Find the JSON array even if there's preamble text
-        array_match = re.search(r"\[.*\]", cleaned, re.DOTALL)
-        if array_match:
-            cleaned = array_match.group(0)
-
+        LOGGER.debug("LLM raw output: %s", raw_text)
+ 
+        # The model reasons first, then outputs the JSON array on the last line.
+        # Find the last [...] block in the output.
+        all_arrays = re.findall(r"\[.*?\]", raw_text, re.DOTALL)
+        if not all_arrays:
+            LOGGER.warning("LLM produced no JSON array in output: %s", raw_text[:200])
+            return []
+ 
+        # Take the last array found — after the chain-of-thought reasoning
+        raw_array = all_arrays[-1]
+        cleaned = _strip_markdown_fences(raw_array)
+ 
         parsed = json.loads(cleaned)
         if not isinstance(parsed, list) or not parsed:
             return []
-
+ 
         items = [str(item).strip() for item in parsed if str(item).strip()]
         if not items:
             return []
-
+ 
         LOGGER.debug("LLM decomposition produced %s subtasks.", len(items))
         return _items_to_subtasks(items)
-
+ 
     except Exception as error:
         LOGGER.warning("LLM decomposition failed: %s", error)
         return []
-
+ 
 
 def _rule_based_split(prompt: str) -> List[Dict[str, Any]]:
-    """Fallback decomposition covering the most common ParallelPrompt surface patterns.
-
-    Handles in priority order:
-      1. Python/JSON bracket arrays: ["item1", "item2"] or ['item1', 'item2']
-      2. Numbered lists: 1. task one  2. task two
-      3. Quoted comma-separated items: "item1", "item2", "item3"
-      4. "for each of X, Y, Z" patterns
-      5. Sentence-splitting on semicolons or newlines as last resort
+    """Fallback decomposition covering ParallelPrompt surface patterns.
 
     Args:
         prompt: Original user prompt.
@@ -274,56 +343,87 @@ def _rule_based_split(prompt: str) -> List[Dict[str, Any]]:
     Returns:
         List of subtask dicts.
     """
-    normalized = re.sub(r"\s+", " ", prompt).strip()
+    raw_prompt = str(prompt).strip()
+    normalized = re.sub(r"\s+", " ", raw_prompt).strip()
     items: List[str] = []
 
-    # Pattern 1: bracket array ["item1", "item2", ...] — very common in ParallelPrompt
-    bracket_match = re.search(r'\[(["\'][^"\']+["\'](?:\s*,\s*["\'][^"\']+["\'])*)\]', normalized)
+    # Pattern 1: bracket array ["item1", "item2"] — most common in ParallelPrompt
+    # Looser match: find [...] block then extract quoted strings inside it
+    bracket_match = re.search(r'\[([^\[\]]{5,})\]', normalized)
     if bracket_match:
-        raw_items = re.findall(r'["\']([^"\']+)["\']', bracket_match.group(1))
+        inner = bracket_match.group(1)
+        # Try double-quoted items first
+        raw_items = re.findall(r'"([^"]{2,})"', inner)
+        if not raw_items:
+            # Try single-quoted items
+            raw_items = re.findall(r"'([^']{2,})'", inner)
+        if not raw_items:
+            # Comma-separated unquoted items
+            raw_items = [x.strip() for x in inner.split(",") if x.strip()]
         items = [item.strip() for item in raw_items if item.strip()]
         if len(items) >= 2:
             LOGGER.debug("Rule-based: found %s items via bracket array.", len(items))
             return _items_to_subtasks(items)
 
     # Pattern 2: numbered list  1. ... 2. ... or 1) ... 2) ...
-    numbered = re.split(r"\n\s*\d+[\).]\s+", "\n" + normalized)
-    numbered = [part.strip() for part in numbered if part.strip()]
+    numbered = re.findall(
+        r"(?:^|\n)\s*\d+[\).]\s+(.*?)(?=(?:\n\s*\d+[\).]\s+)|\Z)",
+        raw_prompt,
+        flags=re.DOTALL,
+    )
+    numbered = [part.strip().rstrip(".") for part in numbered if part.strip()]
     if len(numbered) >= 2:
         LOGGER.debug("Rule-based: found %s items via numbered list.", len(numbered))
         return _items_to_subtasks(numbered)
 
-    # Pattern 3: quoted comma-separated items "X", "Y", "Z" anywhere in the prompt
-    quoted_items = re.findall(r'"([^"]{2,})"', normalized)
-    if len(quoted_items) >= 2:
-        LOGGER.debug("Rule-based: found %s quoted items.", len(quoted_items))
-        return _items_to_subtasks(quoted_items)
-
-    # Pattern 4: "for each of X, Y and Z" or "for X, Y, and Z"
-    for_each_match = re.search(
-        r"(?:for each of|for|translate|analyze|summarize|classify)\s+(.+?)(?:\.|,\s+(?:and\s+)?(?:provide|give|return|write|list))",
-        normalized,
-        re.IGNORECASE,
-    )
-    if for_each_match:
-        candidates = re.split(r",\s*(?:and\s+)?", for_each_match.group(1))
-        candidates = [c.strip().strip('"\'') for c in candidates if c.strip()]
-        if len(candidates) >= 2:
-            LOGGER.debug("Rule-based: found %s items via for-each pattern.", len(candidates))
-            return _items_to_subtasks(candidates)
-
-    # Pattern 5: bullet points  - item or * item
-    bullets = re.split(r"\n\s*[-*•]\s+", "\n" + normalized)
+    # Pattern 3: bullet points - item or * item
+    bullets = re.split(r"(?:^|\n)\s*[-*•]\s+", raw_prompt)
     bullets = [part.strip() for part in bullets if part.strip()]
     if len(bullets) >= 2:
         LOGGER.debug("Rule-based: found %s items via bullet list.", len(bullets))
         return _items_to_subtasks(bullets)
 
-    # Last resort: return the whole prompt as a single task.
-    # Better to have one task than a broken split.
+    # Pattern 4: repeated quoted items on separate lines
+    quoted_lines: List[str] = []
+    for line in raw_prompt.splitlines():
+        stripped = line.strip()
+        if re.match(r'^(?:["“‘]).+(?:["”’])$', stripped):
+            quoted_lines.append(stripped.strip('"“”‘’'))
+    if len(quoted_lines) >= 2:
+        LOGGER.debug("Rule-based: found %s items via repeated quoted lines.", len(quoted_lines))
+        return _items_to_subtasks(quoted_lines)
+
+    # Pattern 5: sentences separated by semicolons (common in NER/sentiment prompts)
+    semicolons = [part.strip() for part in normalized.split(";") if part.strip()]
+    if len(semicolons) >= 2:
+        LOGGER.debug("Rule-based: found %s items via semicolons.", len(semicolons))
+        return _items_to_subtasks(semicolons)
+
+    # Pattern 5: discourse connectors often used for independent asks
+    # e.g. "Explain X and also give Y additionally mention Z"
+    connector_split = re.split(
+        r"\b(?:and also|additionally|also|as well as|plus)\b",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    connector_split = [part.strip(" ,.-") for part in connector_split if part.strip(" ,.-")]
+    if len(connector_split) >= 2:
+        LOGGER.debug("Rule-based: found %s items via discourse connectors.", len(connector_split))
+        return _items_to_subtasks(connector_split)
+
+    # Pattern 6: labeled tasks (e.g., "Easy: ... Medium: ... Hard: ...")
+    labeled_chunks = re.findall(
+        r"([A-Za-z][A-Za-z0-9_\-/ ]{1,20}:\s*.*?)(?=(?:\s+[A-Za-z][A-Za-z0-9_\-/ ]{1,20}:\s*)|$)",
+        normalized,
+    )
+    labeled_chunks = [chunk.strip() for chunk in labeled_chunks if chunk.strip()]
+    if len(labeled_chunks) >= 2:
+        LOGGER.debug("Rule-based: found %s items via labeled segments.", len(labeled_chunks))
+        return _items_to_subtasks(labeled_chunks)
+
+    # Last resort: single task, not parallel
     LOGGER.debug("Rule-based: no parallel pattern found, returning single task.")
     return [{"id": 0, "text": normalized, "dependencies": [], "parallel_safe": False}]
-
 
 def _merge_group(group: List[Dict[str, Any]], new_id: int) -> Dict[str, Any]:
     """Create a serial-only merged subtask from a dependency group.

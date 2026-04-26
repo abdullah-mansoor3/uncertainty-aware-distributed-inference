@@ -18,7 +18,13 @@ except ImportError:  # pragma: no cover - depends on local install
     Llama = None  # type: ignore[assignment]
 
 
-def load_model(model_path: str, n_threads: int, n_ctx: int = 2048, logprobs: int = 10) -> Llama:
+def load_model(
+    model_path: str,
+    n_threads: int,
+    n_ctx: int = 2048,
+    logprobs: int = 10,
+    logits_all: bool = True,
+) -> Llama:
     """Load GGUF model with node-specific CPU configuration.
 
     Args:
@@ -26,6 +32,8 @@ def load_model(model_path: str, n_threads: int, n_ctx: int = 2048, logprobs: int
         n_threads: Number of CPU threads for inference.
         n_ctx: Context length.
         logprobs: Top-K logprobs to return in completion.
+        logits_all: Whether to compute logits for every token position.
+            Must stay True when logprobs are needed for uncertainty metrics.
 
     Returns:
         Initialized Llama model instance.
@@ -39,7 +47,13 @@ def load_model(model_path: str, n_threads: int, n_ctx: int = 2048, logprobs: int
             "llama-cpp-python is not installed. Install dependencies with: pip install -r requirements.txt"
         )
 
-    return Llama(model_path=model_path, n_threads=n_threads, n_ctx=n_ctx, logits_all=True, verbose=False)
+    return Llama(
+        model_path=model_path,
+        n_threads=n_threads,
+        n_ctx=n_ctx,
+        logits_all=logits_all,
+        verbose=False,
+    )
 
 
 def generate(

@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import random
 import sys
 import time
@@ -23,7 +24,6 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.modules.aggregator import aggregate_attributions, merge_outputs
-from src.modules.decomposition import decompose_prompt
 from src.modules.explanation import compute_local_attribution
 from src.modules.inference import generate, load_model
 from src.modules.uncertainty import compute_erce, compute_pro_score
@@ -134,14 +134,28 @@ def main() -> None:
     master_config = config["nodes"]["master"]
     scheduler_config = config["scheduler"]
     probe_tokens = int(scheduler_config.get("probe_tokens", 20))
+    runtime_config = config.get("runtime", {})
+    decomposition_use_llm = bool(runtime_config.get("decomposition_use_llm", False))
+    enable_attribution = bool(runtime_config.get("enable_attribution", False))
+    use_probe_for_pro = bool(runtime_config.get("use_probe_for_pro", False))
+
+    available_cpus = os.cpu_count() or int(master_config["n_threads"])
+    effective_threads = max(1, min(int(master_config["n_threads"]), available_cpus))
+    if effective_threads != int(master_config["n_threads"]):
+        LOGGER.warning(
+            "Reducing n_threads from %s to %s based on available CPU cores.",
+            master_config["n_threads"],
+            effective_threads,
+        )
 
     llm = load_model(
         model_path=model_config["path"],
-        n_threads=int(master_config["n_threads"]),
+        n_threads=effective_threads,
         n_ctx=int(model_config["n_ctx"]),
         logprobs=int(model_config["logprobs"]),
+        logits_all=bool(model_config.get("logits_all", False)),
     )
-    nlp = load_nlp_pipeline()
+    nlp = load_nlp_pipeline() if enable_attribution else None
 
     samples = load_dataset(args.dataset)
     scheduler = SerialScheduler()
@@ -156,9 +170,12 @@ def main() -> None:
     for sample in samples:
         sample_start = time.perf_counter()
         prompt = str(sample.get("original_prompt", "")).strip()
-        references = [str(item) for item in sample.get("ground_truth", [])]
+        if not prompt:
+            LOGGER.warning("Skipping sample id=%s because prompt is empty.", sample.get("id"))
+            continue
 
-        subtasks = decompose_prompt(prompt=prompt, llm=llm)
+        references = [str(item) for item in sample.get("ground_truth", [])]
+        subtasks = [{"id": 0, "text": prompt, "dependencies": [], "parallel_safe": False}]
         scheduled_subtasks = scheduler.schedule(subtasks)
 
         outputs: List[str] = []
@@ -167,19 +184,20 @@ def main() -> None:
         node_latency_total = 0
 
         for subtask in scheduled_subtasks:
-            probe = generate(
-                llm=llm,
-                prompt=subtask["text"],
-                max_tokens=min(probe_tokens, int(model_config["max_tokens"])),
-                temperature=float(model_config["temperature"]),
-                top_p=float(model_config["top_p"]),
-                logprobs=int(model_config["logprobs"]),
-                max_inference_ms=int(model_config["max_inference_ms"]),
-            )
-            pro_score = compute_pro_score(
-                probe.get("pro_logprobs") or probe.get("logprobs", []),
-                adaptive_k=True,
-            )
+            probe_latency_ms = 0
+            probe_logprobs: List[float] = []
+            if use_probe_for_pro:
+                probe = generate(
+                    llm=llm,
+                    prompt=subtask["text"],
+                    max_tokens=min(probe_tokens, int(model_config["max_tokens"])),
+                    temperature=float(model_config["temperature"]),
+                    top_p=float(model_config["top_p"]),
+                    logprobs=int(model_config["logprobs"]),
+                    max_inference_ms=int(model_config["max_inference_ms"]),
+                )
+                probe_latency_ms = int(probe.get("latency_ms", 0))
+                probe_logprobs = probe.get("pro_logprobs") or probe.get("logprobs", [])
 
             generation = generate(
                 llm=llm,
@@ -190,22 +208,27 @@ def main() -> None:
                 logprobs=int(model_config["logprobs"]),
                 max_inference_ms=int(model_config["max_inference_ms"]),
             )
+            pro_score = compute_pro_score(
+                probe_logprobs if use_probe_for_pro else (generation.get("pro_logprobs") or generation.get("logprobs", [])),
+                adaptive_k=True,
+            )
             outputs.append(generation["text"])
-            # SyntaxShap is intentionally approximate here for CPU feasibility (instructions.txt Section 12).
-            try:
-                local_attribution = compute_local_attribution(
-                    subtask=subtask["text"],
-                    output=generation["text"],
-                    llm=llm,
-                    nlp=nlp,
-                )
-            except Exception as error:
-                LOGGER.warning("Local attribution failed for subtask id=%s: %s", subtask.get("id"), error)
-                local_attribution = []
+            local_attribution: List[Dict[str, float]] = []
+            if enable_attribution and nlp is not None:
+                # SyntaxShap is intentionally approximate here for CPU feasibility.
+                try:
+                    local_attribution = compute_local_attribution(
+                        subtask=subtask["text"],
+                        output=generation["text"],
+                        llm=llm,
+                        nlp=nlp,
+                    )
+                except Exception as error:
+                    LOGGER.warning("Local attribution failed for subtask id=%s: %s", subtask.get("id"), error)
             attribution_vectors.append(local_attribution)
             uncertainty_scores.append(pro_score)
             pro_scores.append(pro_score)
-            node_latency_total += int(probe.get("latency_ms", 0)) + int(generation.get("latency_ms", 0))
+            node_latency_total += probe_latency_ms + int(generation.get("latency_ms", 0))
 
         merged_output = merge_outputs(outputs, [item["id"] for item in scheduled_subtasks])
         global_attribution = aggregate_attributions(attribution_vectors, uncertainty_scores)
@@ -252,6 +275,12 @@ def main() -> None:
 
     LOGGER.info("===== Serial Pipeline Summary =====")
     LOGGER.info("Samples: %s", len(samples))
+    LOGGER.info(
+        "decomposition_use_llm=%s enable_attribution=%s use_probe_for_pro=%s",
+        decomposition_use_llm,
+        enable_attribution,
+        use_probe_for_pro,
+    )
     LOGGER.info("Latency mean=%.2f p95=%.2f p99=%.2f", latency_stats["mean"], latency_stats["p95"], latency_stats["p99"])
     LOGGER.info("Mean PRO score: %.4f", float(np.nanmean(np.array(pro_scores, dtype=float))))
     LOGGER.info("ERCE: %.4f", erce_value)
