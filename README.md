@@ -84,6 +84,10 @@ bash models/download_models.sh
 python experiments/prepare_datasets.py --sample-size 100 --seed 42
 ```
 
+```bash
+python data/prepare_parallelprompt.py --use-datasets-lib --verbose
+```
+
 ## Configuration before distributed runs
 
 Edit configs/cluster_config.yaml with your actual two-node values:
