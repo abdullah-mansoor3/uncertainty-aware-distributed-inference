@@ -14,3 +14,4 @@ scipy==1.14.1
 sentence-transformers==3.0.1
 spacy==3.7.5
 langdetect==1.0.9
+mpi4py>=3.1.0

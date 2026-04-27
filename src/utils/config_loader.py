@@ -16,6 +16,8 @@ import yaml
 
 REQUIRED_TOP_LEVEL_KEYS = ["nodes", "model", "scheduler", "datasets", "evaluation", "runtime"]
 
+# Note: `mpi` configuration is optional and used only by MPI runners.
+
 
 def load_config(config_path: str) -> Dict[str, Any]:
     """Load and validate configuration from YAML.

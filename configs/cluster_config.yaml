@@ -42,3 +42,11 @@ datasets:
 evaluation:
   n_bins: 10
   correctness_metric: "rouge1"
+
+mpi:
+  enabled: true
+  hostfile: "/mirror/hostfile"
+  mpirun_cmd: "mpirun"
+  np: 12
+  master_rank: 0
+  worker_ranks: null

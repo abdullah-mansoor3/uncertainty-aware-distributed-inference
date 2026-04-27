@@ -132,6 +132,62 @@ python experiments/run_adaptive.py \
   --output results/results_adaptive.jsonl
 ```
 
+MPI-native runners
+------------------
+
+Two new MPI-native runners are provided which use `mpi4py` and are intended
+to be launched via `mpirun` or `mpiexec`. These runners preserve the serial
+baseline semantics while enabling round-robin and uncertainty-aware routing
+with reduced communication overhead compared to the HTTP worker path.
+
+Run the MPI naive pipeline (master + workers):
+
+```bash
+mpirun -np 4 --hostfile configs/hostfile \
+  python experiments/run_naive_mpi.py \
+  --config configs/cluster_config.yaml \
+  --dataset data/processed/nq_open_100.jsonl \
+  --output results/results_naive_mpi.jsonl
+```
+
+Run the MPI adaptive pipeline (master + workers):
+
+```bash
+mpirun -np 4 --hostfile configs/hostfile \
+  python experiments/run_adaptive_mpi.py \
+  --config configs/cluster_config.yaml \
+  --dataset data/processed/nq_open_100.jsonl \
+  --output results/results_adaptive_mpi.jsonl
+```
+
+Design choices for MPI runners
+-----------------------------
+
+- New runner files: `experiments/run_naive_mpi.py` and
+  `experiments/run_adaptive_mpi.py` keep the original HTTP-based runners
+  unchanged and provide a clear, low-risk MPI path.
+- Master/worker topology: the master is always MPI rank 0 and workers are
+  ranks 1..N-1. Ranks >=1 run `src/worker/mpi_worker.py` to execute subtasks.
+- Message protocol: lightweight dict messages with types `task`, `result`,
+  `ping` and `shutdown` are exchanged via `mpi4py` `comm.send`/`comm.recv`.
+- Decomposition gate (adaptive only): a conservative heuristic prevents
+  decomposition when `decomposition_time` is large relative to expected
+  worker processing time; this avoids wasting time when decomposition is
+  costlier than local inference.
+- Telemetry: master maintains simple EMA estimators for per-worker latencies
+  observed in returned results; EMAs inform future routing and gate decisions.
+- Communication efficiency: the MPI runners use coarse-grained task messages
+  and a pipelined send/receive loop to keep messaging overhead below compute
+  time whenever possible.
+
+Notes
+-----
+- The MPI runners require `mpi4py` in the environment (`pip install mpi4py`) and
+  an MPI runtime such as OpenMPI (install and hostfile setup is not shown here).
+- The `configs/cluster_config.yaml` file now contains an `mpi` block used by
+  the MPI runners; leave other config values (model path, scheduler thresholds)
+  unchanged to preserve experiment comparability.
+
 Repeat each pipeline for:
 
 - data/processed/nq_open_100.jsonl
