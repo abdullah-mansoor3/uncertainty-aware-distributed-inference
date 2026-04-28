@@ -30,7 +30,7 @@ from src.modules.inference import generate, load_model
 from src.scheduler.naive import NaiveParallelScheduler
 from src.utils.config_loader import config_hash, load_config
 from src.utils.metrics import compute_bert_score, compute_bleu, compute_latency_stats, compute_meteor, compute_rouge
-from src.utils.mpi_networking import worker_ranks, recv_message, send_task, probe_workers
+from src.utils.mpi_networking import worker_ranks, recv_message, send_task, probe_workers, wait_for_workers
 
 LOGGER = logging.getLogger(__name__)
 
@@ -99,9 +99,12 @@ def main() -> None:
 
         run_latencies: List[float] = []
 
-        available_workers = worker_ranks()
+        expected_workers = worker_ranks()
+        available_workers = wait_for_workers(expected_workers, timeout_s=120.0)
         if not available_workers:
             LOGGER.warning("No MPI workers found (size=%s). Falling back to serial execution.", size)
+        else:
+            LOGGER.info("MPI workers ready: %s", available_workers)
 
         for sample in samples:
             sample_start = time.perf_counter()

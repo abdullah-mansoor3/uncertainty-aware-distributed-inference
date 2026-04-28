@@ -32,7 +32,7 @@ from src.modules.uncertainty import compute_pro_score
 from src.scheduler.uncertainty_aware import UncertaintyAwareScheduler
 from src.utils.config_loader import config_hash, load_config
 from src.utils.metrics import compute_bert_score, compute_bleu, compute_latency_stats, compute_meteor, compute_rouge
-from src.utils.mpi_networking import worker_ranks, recv_message, send_task, probe_workers
+from src.utils.mpi_networking import worker_ranks, recv_message, send_task, probe_workers, wait_for_workers
 
 LOGGER = logging.getLogger(__name__)
 
@@ -123,8 +123,15 @@ def main() -> None:
         if output_path.exists():
             output_path.unlink()
 
+        expected_workers = worker_ranks()
+        available_workers = wait_for_workers(expected_workers, timeout_s=120.0)
+        if not available_workers:
+            LOGGER.warning("No MPI workers found (size=%s). Falling back to serial execution.", size)
+        else:
+            LOGGER.info("MPI workers ready: %s", available_workers)
+
         # telemetry EMAs per worker
-        worker_ema: Dict[int, EMA] = {w: EMA(alpha=0.2) for w in worker_ranks()}
+        worker_ema: Dict[int, EMA] = {w: EMA(alpha=0.2) for w in available_workers}
 
         for sample in samples:
             sample_start = time.perf_counter()
@@ -202,7 +209,6 @@ def main() -> None:
 
             scheduled = scheduler.schedule(scored_subtasks)
 
-            available_workers = worker_ranks()
             if not available_workers:
                 LOGGER.warning("No workers available; running adaptive sample locally")
                 # fallback to local

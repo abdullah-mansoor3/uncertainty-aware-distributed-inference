@@ -64,3 +64,37 @@ def probe_workers() -> Dict[int, float]:
         t1 = time.perf_counter()
         rtts[r] = (t1 - t0) * 1000.0
     return rtts
+
+
+def wait_for_workers(expected_workers: List[int], timeout_s: float = 120.0) -> List[int]:
+    """Wait for workers to send a readiness message.
+
+    Args:
+        expected_workers: Worker ranks to wait for.
+        timeout_s: Max seconds to wait before returning.
+
+    Returns:
+        List of worker ranks that signaled readiness.
+    """
+    if rank != 0:
+        return []
+
+    import time
+
+    pending = set(int(r) for r in expected_workers)
+    ready: List[int] = []
+    started = time.perf_counter()
+
+    while pending and (time.perf_counter() - started) < timeout_s:
+        if comm.Iprobe(source=MPI.ANY_SOURCE, tag=5):
+            msg = comm.recv(source=MPI.ANY_SOURCE, tag=5)
+            if isinstance(msg, dict) and msg.get("type") == "ready":
+                payload = msg.get("payload", {})
+                rank_id = int(payload.get("worker_rank", -1))
+                if rank_id in pending:
+                    pending.remove(rank_id)
+                    ready.append(rank_id)
+        else:
+            time.sleep(0.05)
+
+    return sorted(ready)

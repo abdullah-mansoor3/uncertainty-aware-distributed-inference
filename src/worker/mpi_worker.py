@@ -55,6 +55,7 @@ def worker_loop() -> None:
     )
 
     LOGGER.info("Worker %s ready", rank)
+    comm.send({"type": "ready", "payload": {"worker_rank": rank}}, dest=0, tag=5)
 
     while True:
         msg = comm.recv(source=0)
@@ -65,7 +66,7 @@ def worker_loop() -> None:
             LOGGER.info("Worker %s shutting down", rank)
             break
         if mtype == "ping":
-            comm.send({"type": "pong"}, dest=0)
+            comm.send({"type": "pong"}, dest=0, tag=4)
             continue
         if mtype == "task":
             payload = msg.get("payload", {})

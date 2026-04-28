@@ -13,7 +13,7 @@ nodes:
     role: "worker"
 
 model:
-  path: "./models/llama-3.2-3b-instruct-q4_k_m.gguf"
+  path: "./models/llama-3.2-3b-q4_k_m.gguf"
   n_ctx: 2048
   max_tokens: 256
   temperature: 0.0
@@ -30,7 +30,7 @@ runtime:
 
 scheduler:
   uncertainty_threshold: 0.5
-  network_fallback_ms: 100.0
+  network_fallback_ms: 250.0
   probe_tokens: 5
 
 datasets:
