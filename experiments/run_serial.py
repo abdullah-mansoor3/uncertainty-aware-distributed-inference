@@ -175,8 +175,19 @@ def main() -> None:
             continue
 
         references = [str(item) for item in sample.get("ground_truth", [])]
+        step_latencies_ms: Dict[str, int] = {
+            "decomposition": 0,
+            "scheduling": 0,
+            "probe": 0,
+            "inference": 0,
+            "attribution": 0,
+            "aggregation": 0,
+            "metrics": 0,
+        }
         subtasks = [{"id": 0, "text": prompt, "dependencies": [], "parallel_safe": False}]
+        scheduling_start = time.perf_counter()
         scheduled_subtasks = scheduler.schedule(subtasks)
+        step_latencies_ms["scheduling"] = int((time.perf_counter() - scheduling_start) * 1000)
 
         outputs: List[str] = []
         attribution_vectors: List[List[Dict[str, float]]] = []
@@ -187,6 +198,7 @@ def main() -> None:
             probe_latency_ms = 0
             probe_logprobs: List[float] = []
             if use_probe_for_pro:
+                probe_start = time.perf_counter()
                 probe = generate(
                     llm=llm,
                     prompt=subtask["text"],
@@ -198,7 +210,9 @@ def main() -> None:
                 )
                 probe_latency_ms = int(probe.get("latency_ms", 0))
                 probe_logprobs = probe.get("pro_logprobs") or probe.get("logprobs", [])
+                step_latencies_ms["probe"] += int((time.perf_counter() - probe_start) * 1000)
 
+            inference_start = time.perf_counter()
             generation = generate(
                 llm=llm,
                 prompt=subtask["text"],
@@ -208,6 +222,7 @@ def main() -> None:
                 logprobs=int(model_config["logprobs"]),
                 max_inference_ms=int(model_config["max_inference_ms"]),
             )
+            step_latencies_ms["inference"] += int((time.perf_counter() - inference_start) * 1000)
             pro_score = compute_pro_score(
                 probe_logprobs if use_probe_for_pro else (generation.get("pro_logprobs") or generation.get("logprobs", [])),
                 adaptive_k=True,
@@ -217,12 +232,14 @@ def main() -> None:
             if enable_attribution and nlp is not None:
                 # SyntaxShap is intentionally approximate here for CPU feasibility.
                 try:
+                    attribution_start = time.perf_counter()
                     local_attribution = compute_local_attribution(
                         subtask=subtask["text"],
                         output=generation["text"],
                         llm=llm,
                         nlp=nlp,
                     )
+                    step_latencies_ms["attribution"] += int((time.perf_counter() - attribution_start) * 1000)
                 except Exception as error:
                     LOGGER.warning("Local attribution failed for subtask id=%s: %s", subtask.get("id"), error)
             attribution_vectors.append(local_attribution)
@@ -230,12 +247,17 @@ def main() -> None:
             pro_scores.append(pro_score)
             node_latency_total += probe_latency_ms + int(generation.get("latency_ms", 0))
 
-        merged_output = merge_outputs(outputs, [item["id"] for item in scheduled_subtasks])
+        aggregation_start = time.perf_counter()
+        merged_output = outputs[0] if outputs else ""
         global_attribution = aggregate_attributions(attribution_vectors, uncertainty_scores)
+        step_latencies_ms["aggregation"] = int((time.perf_counter() - aggregation_start) * 1000)
+
+        metrics_start = time.perf_counter()
         rouge = compute_rouge(merged_output, references)
         meteor = compute_meteor(merged_output, references)
         bleu = compute_bleu(merged_output, references)
         bert = compute_bert_score(merged_output, references)
+        step_latencies_ms["metrics"] = int((time.perf_counter() - metrics_start) * 1000)
 
         correctness_value = rouge["rouge1"] if not np.isnan(rouge["rouge1"]) else 0.0
         correctness_scores.append(correctness_value)
@@ -262,6 +284,7 @@ def main() -> None:
                 "bert": bert,
             },
             "latency_ms": latency_ms,
+            "step_latencies_ms": step_latencies_ms,
             "node_latencies_ms": {"node_a": node_latency_total, "node_b": 0},
             "config_hash": config_hash(config),
             "model_path": model_config["path"],

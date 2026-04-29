@@ -203,11 +203,27 @@ def main() -> None:
         prompt = str(sample.get("original_prompt", "")).strip()
         references = [str(item) for item in sample.get("ground_truth", [])]
 
+        step_latencies_ms: Dict[str, int] = {
+            "decomposition": 0,
+            "scheduling": 0,
+            "probe": 0,
+            "inference": 0,
+            "attribution": 0,
+            "aggregation": 0,
+            "metrics": 0,
+        }
+
+        decomposition_start = time.perf_counter()
         subtasks = decompose_prompt(prompt=prompt, llm=llm)
+        step_latencies_ms["decomposition"] = int((time.perf_counter() - decomposition_start) * 1000)
+
+        scheduling_start = time.perf_counter()
         scheduled = scheduler.schedule(subtasks)
+        step_latencies_ms["scheduling"] = int((time.perf_counter() - scheduling_start) * 1000)
 
         pro_scores_by_id: Dict[int, float] = {}
         for subtask in scheduled:
+            probe_start = time.perf_counter()
             probe = generate(
                 llm=llm,
                 prompt=str(subtask["text"]),
@@ -217,6 +233,7 @@ def main() -> None:
                 logprobs=int(model_cfg["logprobs"]),
                 max_inference_ms=int(model_cfg["max_inference_ms"]),
             )
+            step_latencies_ms["probe"] += int((time.perf_counter() - probe_start) * 1000)
             score = compute_pro_score(probe.get("pro_logprobs") or probe.get("logprobs", []), adaptive_k=True)
             pro_scores_by_id[int(subtask["id"])] = score
             all_pro_scores.append(score)
@@ -241,16 +258,21 @@ def main() -> None:
 
         ordered_ids = [int(item["id"]) for item in scheduled]
         ordered_results = [results_by_id[subtask_id] for subtask_id in ordered_ids]
+        step_latencies_ms["inference"] = sum(int(item.get("latency_ms", 0)) for item in ordered_results)
         outputs = [str(item.get("output", "")) for item in ordered_results]
         uncertainty_scores = [float(pro_scores_by_id.get(subtask_id, float("nan"))) for subtask_id in ordered_ids]
         local_maps = [item.get("attribution", []) for item in ordered_results]
+        aggregation_start = time.perf_counter()
         global_map = aggregate_attributions(local_maps, uncertainty_scores)
+        step_latencies_ms["aggregation"] = int((time.perf_counter() - aggregation_start) * 1000)
 
         merged_output = merge_outputs(outputs, ordered_ids)
+        metrics_start = time.perf_counter()
         rouge = compute_rouge(merged_output, references)
         meteor = compute_meteor(merged_output, references)
         bleu = compute_bleu(merged_output, references)
         bert = compute_bert_score(merged_output, references)
+        step_latencies_ms["metrics"] = int((time.perf_counter() - metrics_start) * 1000)
 
         correctness_value = rouge["rouge1"] if not np.isnan(rouge["rouge1"]) else 0.0
         correctness_scores.append(correctness_value)
@@ -280,6 +302,7 @@ def main() -> None:
                 "bert": bert,
             },
             "latency_ms": latency_ms,
+            "step_latencies_ms": step_latencies_ms,
             "node_latencies_ms": {"node_a": node_a_latency, "node_b": node_b_latency},
             "fallback": any(bool(item.get("fallback", False)) for item in ordered_results),
             "config_hash": config_hash(config),
