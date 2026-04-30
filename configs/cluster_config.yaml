@@ -13,7 +13,7 @@ nodes:
     role: "worker"
 
 model:
-  path: "./models/llama-3.2-3b-q4_k_m.gguf"
+  path: "/home/mpiuser/models/llama-3.2-3b-q4_k_m.gguf"
   n_ctx: 2048
   max_tokens: 256
   temperature: 0.0

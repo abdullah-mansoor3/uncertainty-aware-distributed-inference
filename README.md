@@ -88,6 +88,37 @@ python experiments/prepare_datasets.py --sample-size 100 --seed 42
 python data/prepare_parallelprompt.py --use-datasets-lib --verbose
 ```
 
+ParallelPrompt dataset preparation
+-------------------------------
+
+Basic usage:
+
+```bash
+python data/prepare_parallelprompt.py --verbose
+```
+
+Load from a local parquet cache:
+
+```bash
+python data/prepare_parallelprompt.py --from-local data/raw/parallelprompt_full.parquet --verbose
+```
+
+Custom sample size and output:
+
+```bash
+python data/prepare_parallelprompt.py --sample-size 50 --output data/processed/parallelprompt_50.jsonl
+```
+
+Flags:
+
+- `--sample-size` (int, default: 100) Number of rows to sample after filtering.
+- `--seed` (int, default: 42) Random seed for sampling.
+- `--output` (str, default: data/processed/parallelprompt_100.jsonl) Output JSONL path.
+- `--raw-output` (str, default: data/raw/parallelprompt_full.parquet) Local parquet cache path.
+- `--from-local` (str, default: None) Read from a local parquet file and skip download.
+- `--use-datasets-lib` (flag) Use HuggingFace datasets library instead of direct parquet read.
+- `--verbose` (flag) Enable debug-level logging.
+
 ## Configuration before distributed runs
 
 Edit configs/cluster_config.yaml with your actual two-node values:
