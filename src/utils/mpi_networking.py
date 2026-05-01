@@ -46,10 +46,10 @@ def broadcast_shutdown() -> None:
         comm.send({'type': 'shutdown'}, dest=r, tag=2)
 
 
-def probe_workers() -> Dict[int, float]:
+def probe_workers(timeout_s: float = 5.0) -> Dict[int, float]:
     """Quick ping: ask each worker for a heartbeat and return RTT estimate per worker in ms.
 
-    The function sends a ping and waits for a pong; measured on master only.
+    The function sends a ping and waits for a pong (per-worker timeout); measured on master only.
     """
     if rank != 0:
         return {}
@@ -60,13 +60,16 @@ def probe_workers() -> Dict[int, float]:
         t0 = time.perf_counter()
         comm.send({'type': 'ping'}, dest=r, tag=3)
         # expect a simple {'type':'pong'}
-        msg = comm.recv(source=r, tag=4)
-        t1 = time.perf_counter()
-        rtts[r] = (t1 - t0) * 1000.0
+        while (time.perf_counter() - t0) < timeout_s:
+            if comm.Iprobe(source=r, tag=4):
+                comm.recv(source=r, tag=4)
+                t1 = time.perf_counter()
+                rtts[r] = (t1 - t0) * 1000.0
+                break
     return rtts
 
 
-def wait_for_workers(expected_workers: List[int], timeout_s: float = 120.0) -> List[int]:
+def wait_for_workers(expected_workers: List[int], timeout_s: float = 300.0) -> List[int]:
     """Wait for workers to send a readiness message.
 
     Args:

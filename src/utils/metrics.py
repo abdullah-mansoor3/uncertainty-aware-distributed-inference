@@ -18,7 +18,7 @@ def _get_bert_scorer():
     if _BERT_SCORER is None:
         try:
             from bert_score import BERTScorer
-            _BERT_SCORER = BERTScorer(lang="en", rescale_with_baseline=False, verbose=False)
+            _BERT_SCORER = BERTScorer(lang="en", rescale_with_baseline=False)
         except Exception:
             _BERT_SCORER = False  # sentinel so we don't retry every call
     return _BERT_SCORER if _BERT_SCORER is not False else None

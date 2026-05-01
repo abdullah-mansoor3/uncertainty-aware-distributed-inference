@@ -221,6 +221,7 @@ def main() -> None:
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
     size = comm.Get_size()
+    local_world_ranks = get_local_world_ranks(comm)
 
     config = load_config(args.config)
     random_seed = int(config["runtime"]["random_seed"]) if config.get("runtime") else 42
@@ -259,8 +260,6 @@ def main() -> None:
         else:
             LOGGER.info("MPI workers ready: %s", available_workers)
 
-        local_world_ranks = get_local_world_ranks(comm)
-
         # telemetry EMAs per worker
         worker_ema: Dict[int, EMA] = {w: EMA(alpha=0.2) for w in available_workers}
         worker_rtt_ema: Dict[int, EMA] = {w: EMA(alpha=0.2) for w in available_workers}
@@ -270,7 +269,7 @@ def main() -> None:
         run_latencies: List[float] = []
 
         if available_workers:
-            initial_rtts = probe_workers()
+            initial_rtts = probe_workers(timeout_s=5.0)
             for w, rtt in initial_rtts.items():
                 if w in worker_rtt_ema:
                     worker_rtt_ema[w].update(rtt)
