@@ -1,0 +1,4 @@
+Pipeline,Mean Subtasks,Max Subtasks,Min Subtasks,Decomposed (>1),Decomposed %,Single Task %
+Serial,1.0,1,1,0,0.0%,100.0%
+Naive,3.93,53,1,62,62.0%,38.0%
+Adaptive,3.93,53,1,62,62.0%,38.0%

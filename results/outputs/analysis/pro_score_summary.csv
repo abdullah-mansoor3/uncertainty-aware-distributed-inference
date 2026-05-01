@@ -1,0 +1,4 @@
+Pipeline,Total Scores,Valid,NaN Count,NaN %,Mean PRO,Std PRO,Pct > 0.5
+Serial,100,100,0,0.0%,0.6965,0.2018,87.0%
+Naive,393,0,393,100.0%,,,N/A
+Adaptive,393,0,393,100.0%,,,N/A

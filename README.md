@@ -143,11 +143,7 @@ Start worker (on node_b):
 
 ```bash
 python -m uvicorn src.worker.worker_server:app --host 0.0.0.0 --port 8001
-```
-
-Naive parallel (on node_a):
-
-```bash
+git pull or
 python experiments/run_naive.py \
   --config configs/cluster_config.yaml \
   --dataset data/processed/nq_open_100.jsonl \
@@ -161,6 +157,12 @@ python experiments/run_adaptive.py \
   --config configs/cluster_config.yaml \
   --dataset data/processed/nq_open_100.jsonl \
   --output results/results_adaptive.jsonl
+```
+
+## Generating Experiment Analysis
+
+```bash
+python experiments/analysis.py
 ```
 
 MPI-native runners
