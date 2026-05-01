@@ -6,7 +6,6 @@ output/
 data/raw/
 data/processed/
 output/
-results/
 models/*.gguf
 models/.cache/
 .tmp/
@@ -18,6 +17,7 @@ models/.cache/
 *.pt
 *.pth
 *.safetensors
+!/results/*
 
 # Hugging Face / Transformers / Torch caches
 .cache/huggingface/
