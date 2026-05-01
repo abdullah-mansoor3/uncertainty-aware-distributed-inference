@@ -27,9 +27,17 @@ from src.modules.aggregator import aggregate_attributions, merge_outputs
 from src.modules.decomposition import decompose_prompt
 from src.modules.explanation import compute_local_attribution
 from src.modules.inference import generate, load_model
+from src.modules.uncertainty import compute_auroc, compute_erce, compute_pro_score
 from src.scheduler.naive import NaiveParallelScheduler
 from src.utils.config_loader import config_hash, load_config
-from src.utils.metrics import compute_bert_score, compute_bleu, compute_latency_stats, compute_meteor, compute_rouge
+from src.utils.metrics import (
+    compute_bert_score,
+    compute_bleu,
+    compute_latency_stats,
+    compute_meteor,
+    compute_rouge,
+    validate_required_metrics,
+)
 from src.utils.mpi_networking import worker_ranks, recv_message, send_task, probe_workers, wait_for_workers
 
 LOGGER = logging.getLogger(__name__)
@@ -64,6 +72,33 @@ def append_jsonl(path: Path, record: Dict[str, Any]) -> None:
         handle.flush()
 
 
+def build_contextualized_subtask_prompt(original_prompt: str, subtask_text: str) -> str:
+    """Preserve global context while focusing generation on one subtask."""
+    return (
+        "You are solving one subtask from a larger user request.\n"
+        "Use the full context below, but only answer the specific subtask.\n\n"
+        f"FULL REQUEST:\n{original_prompt}\n\n"
+        f"SUBTASK TO SOLVE:\n{subtask_text}\n\n"
+        "Return only the subtask answer."
+    )
+
+
+def compute_decomposition_alignment_score(predicted_subtasks: List[str], reference_subtasks: List[str]) -> float:
+    """Compute token-overlap F1 between predicted and reference subtasks."""
+    if not reference_subtasks:
+        return float("nan")
+    pred_tokens = set(" ".join(predicted_subtasks).lower().split())
+    ref_tokens = set(" ".join(reference_subtasks).lower().split())
+    if not pred_tokens or not ref_tokens:
+        return float("nan")
+    overlap = len(pred_tokens & ref_tokens)
+    precision = overlap / len(pred_tokens)
+    recall = overlap / len(ref_tokens)
+    if precision + recall == 0:
+        return 0.0
+    return float(2 * precision * recall / (precision + recall))
+
+
 def main() -> None:
     args = parse_args()
     level = logging.DEBUG if args.verbose else logging.INFO
@@ -81,6 +116,14 @@ def main() -> None:
     model_cfg = config["model"]
     master_cfg = config["nodes"]["master"]
     scheduler_cfg = config["scheduler"]
+    metric_ok, missing_metrics = validate_required_metrics(["rouge", "meteor", "bleu", "bert"])
+    if not metric_ok:
+        if rank == 0:
+            LOGGER.error(
+                "Missing critical metric dependencies: %s. Exiting without running experiments.",
+                ", ".join(missing_metrics),
+            )
+        return
 
     if rank == 0:
         # Master
@@ -98,6 +141,8 @@ def main() -> None:
             output_path.unlink()
 
         run_latencies: List[float] = []
+        calibration_scores: List[float] = []
+        calibration_correctness: List[float] = []
 
         expected_workers = worker_ranks()
         available_workers = wait_for_workers(expected_workers, timeout_s=120.0)
@@ -110,17 +155,102 @@ def main() -> None:
             sample_start = time.perf_counter()
             prompt = str(sample.get("original_prompt", "")).strip()
             references = [str(item) for item in sample.get("ground_truth", [])]
+            decomposition_references = [str(item) for item in sample.get("decomposition_ground_truth", []) if str(item).strip()]
 
+            step_latencies_ms: Dict[str, int] = {
+                "decomposition": 0,
+                "probe": 0,
+                "scheduling": 0,
+                "dispatch_send": 0,
+                "dispatch_wait": 0,
+                "local_inference": 0,
+                "attribution": 0,
+                "aggregation": 0,
+                "metrics": 0,
+            }
+            per_subtask_latencies_ms: List[Dict[str, Any]] = []
+
+            decomp_start = time.perf_counter()
             subtasks = decompose_prompt(prompt=prompt, llm=llm)
+            step_latencies_ms["decomposition"] = int((time.perf_counter() - decomp_start) * 1000)
+
+            schedule_start = time.perf_counter()
             scheduled = scheduler.schedule(subtasks)
+            step_latencies_ms["scheduling"] = int((time.perf_counter() - schedule_start) * 1000)
 
-            # Simple pipelined dispatch: send up to W tasks, then wait for results and refill
-            pending = list(scheduled)
-            in_flight = 0
+            subtask_count = max(1, len(scheduled))
+            per_subtask_max_tokens = max(32, int(model_cfg["max_tokens"]) // subtask_count)
+            probe_tokens = min(int(scheduler_cfg.get("probe_tokens", 5)), per_subtask_max_tokens)
+
+            for item in scheduled:
+                exec_prompt = build_contextualized_subtask_prompt(prompt, str(item["text"]))
+                item["execution_prompt"] = exec_prompt
+                probe_start = time.perf_counter()
+                probe = generate(
+                    llm=llm,
+                    prompt=exec_prompt,
+                    max_tokens=probe_tokens,
+                    temperature=float(model_cfg.get("temperature", 0.0)),
+                    top_p=float(model_cfg.get("top_p", 1.0)),
+                    logprobs=int(model_cfg.get("logprobs", 10)),
+                    max_inference_ms=int(model_cfg.get("max_inference_ms", 0)),
+                )
+                step_latencies_ms["probe"] += int((time.perf_counter() - probe_start) * 1000)
+                item["pro_score"] = compute_pro_score(probe.get("pro_logprobs") or probe.get("logprobs", []), adaptive_k=True)
+
+            # Respect naive round-robin assignment: run node_a tasks locally and node_b on workers.
+            local_tasks = [task for task in scheduled if str(task.get("assigned_node", "node_a")) == "node_a" or not available_workers]
+            remote_tasks = [task for task in scheduled if str(task.get("assigned_node", "node_a")) == "node_b" and available_workers]
+
             results_by_id: Dict[int, Dict[str, Any]] = {}
-            worker_cycle = iter(available_workers) if available_workers else iter([])
 
-            # Kick off initial tasks
+            for subtask in local_tasks:
+                local_start = time.perf_counter()
+                generation = generate(
+                    llm=llm,
+                    prompt=str(subtask["execution_prompt"]),
+                    max_tokens=per_subtask_max_tokens,
+                    temperature=float(model_cfg.get("temperature", 0.0)),
+                    top_p=float(model_cfg.get("top_p", 1.0)),
+                    logprobs=int(model_cfg.get("logprobs", 10)),
+                    max_inference_ms=int(model_cfg.get("max_inference_ms", 0)),
+                )
+                step_latencies_ms["local_inference"] += int((time.perf_counter() - local_start) * 1000)
+                output = str(generation.get("text", ""))
+                attribution_start = time.perf_counter()
+                try:
+                    attribution = compute_local_attribution(subtask=str(subtask["text"]), output=output, llm=llm, nlp=None)
+                except Exception:
+                    attribution = []
+                step_latencies_ms["attribution"] += int((time.perf_counter() - attribution_start) * 1000)
+
+                subtask_id = int(subtask["id"])
+                item_latency_ms = int(generation.get("latency_ms", 0))
+                results_by_id[subtask_id] = {
+                    "id": subtask_id,
+                    "output": output,
+                    "attribution": attribution,
+                    "latency_ms": item_latency_ms,
+                    "worker_rank": 0,
+                    "effective_node": "node_a",
+                    "round_trip_ms": item_latency_ms,
+                }
+                per_subtask_latencies_ms.append(
+                    {
+                        "id": subtask_id,
+                        "assigned_node": "node_a",
+                        "effective_node": "node_a",
+                        "inference_ms": item_latency_ms,
+                        "round_trip_ms": item_latency_ms,
+                    }
+                )
+
+            pending = list(remote_tasks)
+            in_flight = 0
+            worker_cycle = iter(available_workers) if available_workers else iter([])
+            send_started_at: Dict[int, float] = {}
+
+            send_start = time.perf_counter()
             while pending and available_workers:
                 try:
                     w = next(worker_cycle)
@@ -128,23 +258,42 @@ def main() -> None:
                     worker_cycle = iter(available_workers)
                     w = next(worker_cycle)
                 task = pending.pop(0)
-                payload = {"id": int(task["id"]), "text": str(task["text"]), "max_tokens": int(model_cfg["max_tokens"]), "temperature": float(model_cfg.get("temperature", 0.0))}
+                payload = {
+                    "id": int(task["id"]),
+                    "text": str(task["execution_prompt"]),
+                    "max_tokens": per_subtask_max_tokens,
+                    "temperature": float(model_cfg.get("temperature", 0.0)),
+                }
                 send_task(w, payload)
+                send_started_at[int(task["id"])] = time.perf_counter()
                 in_flight += 1
-                # stop sending if we've filled one per worker
                 if in_flight >= len(available_workers):
                     break
+            step_latencies_ms["dispatch_send"] += int((time.perf_counter() - send_start) * 1000)
 
-            # Collect and refill loop
+            wait_start = time.perf_counter()
             while in_flight > 0:
                 msg = recv_message()
                 if not isinstance(msg, dict):
                     continue
                 if msg.get("type") == "result":
                     payload = msg.get("payload", {})
-                    results_by_id[int(payload.get("id", -1))] = payload
+                    subtask_id = int(payload.get("id", -1))
+                    round_trip_ms = int((time.perf_counter() - send_started_at.get(subtask_id, time.perf_counter())) * 1000)
+                    payload["round_trip_ms"] = round_trip_ms
+                    payload["effective_node"] = "node_b"
+                    results_by_id[subtask_id] = payload
+                    per_subtask_latencies_ms.append(
+                        {
+                            "id": subtask_id,
+                            "assigned_node": "node_b",
+                            "effective_node": "node_b",
+                            "inference_ms": int(payload.get("latency_ms", 0)),
+                            "round_trip_ms": round_trip_ms,
+                            "worker_rank": int(payload.get("worker_rank", -1)),
+                        }
+                    )
                     in_flight -= 1
-                    # refill one
                     if pending:
                         try:
                             w = next(worker_cycle)
@@ -152,43 +301,46 @@ def main() -> None:
                             worker_cycle = iter(available_workers)
                             w = next(worker_cycle)
                         task = pending.pop(0)
-                        payload = {"id": int(task["id"]), "text": str(task["text"]), "max_tokens": int(model_cfg["max_tokens"]), "temperature": float(model_cfg.get("temperature", 0.0))}
-                        send_task(w, payload)
+                        send_payload = {
+                            "id": int(task["id"]),
+                            "text": str(task["execution_prompt"]),
+                            "max_tokens": per_subtask_max_tokens,
+                            "temperature": float(model_cfg.get("temperature", 0.0)),
+                        }
+                        send_task(w, send_payload)
+                        send_started_at[int(task["id"])] = time.perf_counter()
                         in_flight += 1
+            step_latencies_ms["dispatch_wait"] = int((time.perf_counter() - wait_start) * 1000)
 
-            # If no workers, run local
-            if not available_workers:
-                ordered_results = []
-                for subtask in scheduled:
-                    generation = generate(
-                        llm=llm,
-                        prompt=subtask["text"],
-                        max_tokens=int(model_cfg["max_tokens"]),
-                        temperature=float(model_cfg.get("temperature", 0.0)),
-                        top_p=float(model_cfg.get("top_p", 1.0)),
-                        logprobs=int(model_cfg.get("logprobs", 10)),
-                        max_inference_ms=int(model_cfg.get("max_inference_ms", 0)),
-                    )
-                    output = str(generation.get("text", ""))
-                    try:
-                        attribution = compute_local_attribution(subtask=subtask["text"], output=output, llm=llm, nlp=None)
-                    except Exception:
-                        attribution = []
-                    ordered_results.append({"id": int(subtask["id"]), "output": output, "attribution": attribution, "latency_ms": int(generation.get("latency_ms", 0)), "effective_node": "node_a"})
-            else:
-                ordered_ids = [int(item["id"]) for item in scheduled]
-                ordered_results = [results_by_id[subtask_id] for subtask_id in ordered_ids]
+            ordered_ids = [int(item["id"]) for item in scheduled]
+            ordered_results = [results_by_id[subtask_id] for subtask_id in ordered_ids]
 
             outputs = [str(item.get("output", "")) for item in ordered_results]
             uncertainty_scores = [float(item.get("pro_score", float("nan"))) for item in scheduled]
+            valid_uncertainty_scores = [score for score in uncertainty_scores if not np.isnan(score)]
             local_maps = [item.get("attribution", []) for item in ordered_results]
+            aggregation_start = time.perf_counter()
             global_map = aggregate_attributions(local_maps, uncertainty_scores)
+            step_latencies_ms["aggregation"] = int((time.perf_counter() - aggregation_start) * 1000)
 
             merged_output = merge_outputs(outputs, [int(item["id"]) for item in scheduled])
+            metrics_start = time.perf_counter()
             rouge = compute_rouge(merged_output, references)
             meteor = compute_meteor(merged_output, references)
             bleu = compute_bleu(merged_output, references)
             bert = compute_bert_score(merged_output, references)
+            step_latencies_ms["metrics"] = int((time.perf_counter() - metrics_start) * 1000)
+            decomposition_alignment_score = compute_decomposition_alignment_score(
+                [str(item.get("text", "")) for item in scheduled],
+                decomposition_references,
+            )
+            sample_correctness = float(rouge["rouge1"]) if not np.isnan(float(rouge["rouge1"])) else 0.0
+            sample_uncertainty = float(np.mean(valid_uncertainty_scores)) if valid_uncertainty_scores else float("nan")
+            if not np.isnan(sample_uncertainty):
+                calibration_scores.append(sample_uncertainty)
+                calibration_correctness.append(sample_correctness)
+            running_erce = compute_erce(calibration_scores, calibration_correctness, n_bins=int(config["evaluation"]["n_bins"]))
+            running_auroc = compute_auroc(calibration_scores, calibration_correctness)
 
             latency_ms = int((time.perf_counter() - sample_start) * 1000)
             run_latencies.append(latency_ms)
@@ -200,6 +352,7 @@ def main() -> None:
                 "subtasks": [str(item.get("text", "")) for item in scheduled],
                 "routing": {f"subtask_{idx}": str(item.get("assigned_node", "node_a")) for idx, item in enumerate(scheduled)},
                 "uncertainty_scores": uncertainty_scores,
+                "decomposition_alignment_score": decomposition_alignment_score,
                 "outputs": outputs,
                 "merged_output": merged_output,
                 "attribution_vectors": local_maps,
@@ -212,7 +365,14 @@ def main() -> None:
                     "bert": bert,
                 },
                 "latency_ms": latency_ms,
-                "node_latencies_ms": {"node_a": sum(int(item.get("latency_ms", 0)) for item in ordered_results if item.get("worker_rank") is None or item.get("worker_rank") == 0), "node_b": sum(int(item.get("latency_ms", 0)) for item in ordered_results if item.get("worker_rank") is not None and item.get("worker_rank") != 0)},
+                "step_latencies_ms": step_latencies_ms,
+                "per_subtask_latencies_ms": sorted(per_subtask_latencies_ms, key=lambda item: int(item.get("id", -1))),
+                "node_latencies_ms": {
+                    "node_a": sum(int(item.get("latency_ms", 0)) for item in ordered_results if int(item.get("worker_rank", 0)) == 0),
+                    "node_b": sum(int(item.get("latency_ms", 0)) for item in ordered_results if int(item.get("worker_rank", 0)) != 0),
+                },
+                "running_erce": running_erce,
+                "running_auroc": running_auroc,
                 "fallback": False,
                 "config_hash": config_hash(config),
                 "model_path": model_cfg["path"],
@@ -222,7 +382,15 @@ def main() -> None:
             LOGGER.info("Processed sample id=%s latency=%sms", sample.get("id"), latency_ms)
 
         latency_stats = compute_latency_stats(run_latencies)
-        LOGGER.info("Naive MPI pipeline completed. Samples=%s mean_latency=%.2f", len(run_latencies), latency_stats["mean"])
+        final_erce = compute_erce(calibration_scores, calibration_correctness, n_bins=int(config["evaluation"]["n_bins"]))
+        final_auroc = compute_auroc(calibration_scores, calibration_correctness)
+        LOGGER.info(
+            "Naive MPI pipeline completed. Samples=%s mean_latency=%.2f ERCE=%.4f AUROC=%.4f",
+            len(run_latencies),
+            latency_stats["mean"],
+            final_erce,
+            final_auroc,
+        )
 
     else:
         # Worker ranks run the worker loop defined in src/worker/mpi_worker.py

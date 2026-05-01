@@ -4,7 +4,7 @@ experiment reporting.
 """
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 import numpy as np
 
@@ -135,3 +135,45 @@ def compute_latency_stats(latencies: List[float]) -> Dict[str, float]:
         "p99": float(np.percentile(latency_array, 99)),
         "max": float(np.max(latency_array)),
     }
+
+
+def validate_required_metrics(required_metrics: List[str] | None = None) -> Tuple[bool, List[str]]:
+    """Validate that critical metric dependencies are importable.
+
+    Args:
+        required_metrics: Metric names to validate. Supported values are
+            "rouge", "meteor", "bleu", and "bert". If omitted, validates all.
+
+    Returns:
+        Tuple of (is_valid, missing_dependencies). If is_valid is False, runners
+        should exit before executing expensive experiments.
+    """
+    metrics = required_metrics or ["rouge", "meteor", "bleu", "bert"]
+    missing: List[str] = []
+
+    for metric in metrics:
+        name = metric.strip().lower()
+        if name == "rouge":
+            try:
+                from rouge_score import rouge_scorer  # noqa: F401
+            except Exception:
+                missing.append("rouge-score")
+        elif name == "meteor":
+            try:
+                from nltk.translate.meteor_score import meteor_score  # noqa: F401
+            except Exception:
+                missing.append("nltk(meteor)")
+        elif name == "bleu":
+            try:
+                from nltk.translate.bleu_score import sentence_bleu  # noqa: F401
+            except Exception:
+                missing.append("nltk(bleu)")
+        elif name == "bert":
+            try:
+                import bert_score  # noqa: F401
+            except Exception:
+                missing.append("bert-score")
+
+    # Preserve order while deduplicating.
+    unique_missing = list(dict.fromkeys(missing))
+    return (len(unique_missing) == 0, unique_missing)

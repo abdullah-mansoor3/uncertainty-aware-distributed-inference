@@ -227,23 +227,39 @@ lat_df = pd.DataFrame(latency_summary)
 print("\nOverall Latency Statistics:")
 print(lat_df.to_string(index=False))
 
-# Step latencies for serial
-print("\n\nSerial Pipeline — Step Latency Breakdown:")
-steps_agg = {}
-for r in serial_rows:
-    for k, v in r.get("step_latencies_ms", {}).items():
-        steps_agg.setdefault(k, []).append(int(v))
-
-step_df = pd.DataFrame([
-    {"Step": k, "Mean (ms)": int(np.mean(v)), "P95 (ms)": int(np.percentile(v, 95)), "Max (ms)": int(np.max(v))}
-    for k, v in steps_agg.items()
-])
-print(step_df.to_string(index=False))
+# Step latencies for all pipelines
+print("\n\nStep Latency Breakdown by Pipeline:")
+step_rows = []
+for label, rows in datasets.items():
+    steps_agg = {}
+    for r in rows:
+        for k, v in (r.get("step_latencies_ms") or {}).items():
+            try:
+                steps_agg.setdefault(k, []).append(float(v))
+            except Exception:
+                continue
+    for step_name, values in steps_agg.items():
+        if not values:
+            continue
+        step_rows.append(
+            {
+                "Pipeline": label,
+                "Step": step_name,
+                "Mean (ms)": int(np.mean(values)),
+                "P95 (ms)": int(np.percentile(values, 95)),
+                "Max (ms)": int(np.max(values)),
+            }
+        )
+step_df = pd.DataFrame(step_rows)
+if not step_df.empty:
+    print(step_df.sort_values(["Pipeline", "Mean (ms)"], ascending=[True, False]).to_string(index=False))
+else:
+    print("No step_latencies_ms field found in results.")
 
 # Save
 lat_df.to_csv(OUT_DIR / "latency_summary.csv", index=False)
-step_df.to_csv(OUT_DIR / "serial_step_latencies.csv", index=False)
-print(f"\nSaved: latency_summary.csv, serial_step_latencies.csv")
+step_df.to_csv(OUT_DIR / "step_latency_summary.csv", index=False)
+print(f"\nSaved: latency_summary.csv, step_latency_summary.csv")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 5. CORRECTNESS METRICS
@@ -319,10 +335,9 @@ print(pro_df.to_string(index=False))
 pro_df.to_csv(OUT_DIR / "pro_score_summary.csv", index=False)
 print(f"\nSaved: pro_score_summary.csv")
 print()
-print("  NOTE: Naive and Adaptive uncertainty_scores are entirely NaN.")
-print("  This indicates the PRO probe inference ran but logprobs were not recorded")
-print("  in the result schema for these pipelines. The serial pipeline correctly")
-print("  records PRO scores from the generate() call's logprob output.")
+for _, row in pro_df.iterrows():
+    if int(row["Valid"]) == 0 and int(row["Total Scores"]) > 0:
+        print(f"  NOTE: {row['Pipeline']} has zero valid PRO scores despite populated uncertainty_scores.")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 7. DECOMPOSITION ANALYSIS
@@ -351,6 +366,30 @@ print("\nDecomposition Statistics:")
 print(decomp_df.to_string(index=False))
 decomp_df.to_csv(OUT_DIR / "decomposition_summary.csv", index=False)
 print(f"\nSaved: decomposition_summary.csv")
+
+# Decomposition alignment quality (requires decomposition_ground_truth-derived score in results)
+decomp_align_rows = []
+for label, rows in datasets.items():
+    vals = [
+        float(r.get("decomposition_alignment_score"))
+        for r in rows
+        if r.get("decomposition_alignment_score") is not None
+        and not (isinstance(r.get("decomposition_alignment_score"), float) and math.isnan(r.get("decomposition_alignment_score")))
+    ]
+    decomp_align_rows.append(
+        {
+            "Pipeline": label,
+            "N valid": len(vals),
+            "Mean": round(float(np.mean(vals)), 4) if vals else float("nan"),
+            "P50": round(float(np.percentile(vals, 50)), 4) if vals else float("nan"),
+            "P95": round(float(np.percentile(vals, 95)), 4) if vals else float("nan"),
+        }
+    )
+decomp_align_df = pd.DataFrame(decomp_align_rows)
+print("\nDecomposition Alignment Score Summary:")
+print(decomp_align_df.to_string(index=False))
+decomp_align_df.to_csv(OUT_DIR / "decomposition_alignment_summary.csv", index=False)
+print("Saved: decomposition_alignment_summary.csv")
 
 # Subtask count distribution for adaptive
 print("\nAdaptive — Subtask Count Distribution:")
@@ -409,6 +448,27 @@ print(f"\nNode_b latency difference (Adaptive − Naive):")
 print(f"  Mean: {np.mean(diff):.0f} ms   Std: {np.std(diff):.0f} ms")
 print(f"  Adaptive faster on {sum(diff < 0)} samples, slower on {sum(diff > 0)} samples")
 
+# Calibration metrics tracked during MPI runs
+def latest_running_metric(rows, key):
+    vals = [
+        float(r.get(key))
+        for r in rows
+        if r.get(key) is not None and not (isinstance(r.get(key), float) and math.isnan(r.get(key)))
+    ]
+    return vals[-1] if vals else float("nan")
+
+calib_df = pd.DataFrame(
+    [
+        {"Pipeline": "Serial", "ERCE": float("nan"), "AUROC": float("nan")},
+        {"Pipeline": "Naive", "ERCE": latest_running_metric(naive_rows, "running_erce"), "AUROC": latest_running_metric(naive_rows, "running_auroc")},
+        {"Pipeline": "Adaptive", "ERCE": latest_running_metric(adaptive_rows, "running_erce"), "AUROC": latest_running_metric(adaptive_rows, "running_auroc")},
+    ]
+)
+print("\nCalibration Summary (latest running values):")
+print(calib_df.to_string(index=False))
+calib_df.to_csv(OUT_DIR / "calibration_summary.csv", index=False)
+print("Saved: calibration_summary.csv")
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 9. PIPELINE COMPARISON TABLE
 # ─────────────────────────────────────────────────────────────────────────────
@@ -443,6 +503,8 @@ for label, rows in datasets.items():
         "BLEU":              safe_mean_corr(rows, "bleu"),
         "Mean Subtasks":     round(np.mean(n_sub), 2),
         "PRO Mean":          round(np.mean(pro_vals), 4) if pro_vals else "NaN (all missing)",
+        "ERCE":              round(latest_running_metric(rows, "running_erce"), 4) if label != "Serial" else float("nan"),
+        "AUROC":             round(latest_running_metric(rows, "running_auroc"), 4) if label != "Serial" else float("nan"),
         "NodeB Mean (s)":    round(np.nanmean(node_b) / 1000, 1),
     })
 
@@ -545,7 +607,7 @@ if pro_serial:
     ax.axvline(0.5, color="red", linestyle="--", linewidth=1.5, label="Threshold τ=0.5")
     ax.set_xlabel("PRO Score")
     ax.set_ylabel("Frequency")
-    ax.set_title("PRO Score Distribution — Serial Pipeline\n(Naive/Adaptive: all NaN — see validity notes)")
+    ax.set_title("PRO Score Distribution — Serial Pipeline")
     ax.legend()
     ax.grid(alpha=0.3)
 plt.tight_layout()
@@ -555,6 +617,13 @@ print("  Saved: plot_pro_scores_serial.png")
 
 # ── Plot 4: Serial step latency breakdown ────────────────────────────────
 fig, ax = plt.subplots(figsize=(9, 4))
+steps_agg = {}
+for r in serial_rows:
+    for k, v in (r.get("step_latencies_ms") or {}).items():
+        try:
+            steps_agg.setdefault(k, []).append(float(v))
+        except Exception:
+            continue
 step_means = {k: np.mean(v) / 1000 for k, v in steps_agg.items()}
 keys = list(step_means.keys())
 vals = list(step_means.values())
@@ -666,123 +735,50 @@ naive_mean_r1    = safe_mean_corr(naive_rows, "rouge1")
 adapt_mean_r1    = safe_mean_corr(adaptive_rows, "rouge1")
 
 print(f"""
-ISSUE 1 — CRITICAL: Parallel pipelines are ~5x SLOWER than serial
+LATENCY OVERVIEW
   Serial mean latency:   {serial_mean_lat:.1f}s
-  Naive mean latency:    {naive_mean_lat:.1f}s  ({naive_mean_lat/serial_mean_lat:.1f}x slower)
-  Adaptive mean latency: {adapt_mean_lat:.1f}s  ({adapt_mean_lat/serial_mean_lat:.1f}x slower)
+  Naive mean latency:    {naive_mean_lat:.1f}s  ({naive_mean_lat/serial_mean_lat:.2f}x vs serial)
+  Adaptive mean latency: {adapt_mean_lat:.1f}s  ({adapt_mean_lat/serial_mean_lat:.2f}x vs serial)
 
-  Root cause: The i5 worker node (node_b) is processing ALL subtask compute
-  (node_b latency accounts for >100% of total latency, node_a latency = 0).
-  This means either: (a) the master is sending all work to the worker and doing
-  nothing locally, or (b) node_a latency is not being recorded in the result schema.
-  The straggler problem (a slow i5 executing large subtask chains) is dominating.
-  Decomposition overhead compounds this — splitting a 47s serial task into 4
-  subtasks each taking 60s on the i5 yields 240s total.
-
-ISSUE 2 — CRITICAL: uncertainty_scores are 100% NaN in Naive and Adaptive
-  The PRO probe runs in both pipelines (the code calls compute_pro_score)
-  but the scores never make it into the result record. In run_naive_mpi.py the
-  probe result is discarded before being written to the record dict.
-  In run_adaptive_mpi.py the worker reply doesn't include logprobs so
-  compute_pro_score returns NaN from an empty list. This means:
-  - Uncertainty-aware routing cannot be validated
-  - The adaptive scheduler's routing signal is effectively random
-  - ERCE and AUROC cannot be computed
-
-ISSUE 3 — SIGNIFICANT: Naive and Adaptive produce IDENTICAL outputs
-  100/100 samples have the same merged_output and identical routing assignments.
-  The adaptive scheduler IS routing differently internally (EMA logic runs), but
-  the result schema doesn't capture decomposed/locally_processed/fallback_to_serial
-  flags — these three fields are missing from all 100 adaptive records.
-  The routing dict shows same node assignments because the EMA scheduler and
-  round-robin produced the same split on this dataset.
-
-ISSUE 4 — MODERATE: BERTScore is NaN for all 100 samples across all pipelines
-  bert: nan in every record. The bert_score library likely failed silently during
-  the experiment run (possibly OOM or missing transformers model). This removes
-  one of the two semantic metrics entirely.
-
-ISSUE 5 — MODERATE: node_a latency = 0 in both parallel pipelines
-  The master node's own inference contribution (if any) is not being recorded.
-  Only node_b latency appears. This makes node-level latency analysis impossible.
-
-ISSUE 6 — MINOR: Serial pipeline decomposition latency = 0
-  The serial runner skips decomposition by design (subtasks = [full prompt]),
-  so decomposition_ms is always 0. This is correct but means we cannot compare
-  decomposition overhead across pipelines.
-
-CORRECTNESS DROP (parallel vs serial):
-  Serial ROUGE-1:   {serial_mean_r1:.4f}
-  Naive ROUGE-1:    {naive_mean_r1:.4f}  ({(naive_mean_r1-serial_mean_r1)/serial_mean_r1*100:.1f}% change)
-  Adaptive ROUGE-1: {adapt_mean_r1:.4f}  ({(adapt_mean_r1-serial_mean_r1)/serial_mean_r1*100:.1f}% change)
-
-  Parallel pipelines show ~55% lower ROUGE-1 than serial. This is caused by
-  context fragmentation: each subtask receives only its text fragment without
-  the full document context, so individual outputs are shorter and less accurate.
-  The merge step concatenates these fragments but doesn't recover coherence.
+CORRECTNESS OVERVIEW (ROUGE-1)
+  Serial:   {serial_mean_r1:.4f}
+  Naive:    {naive_mean_r1:.4f}  ({(naive_mean_r1-serial_mean_r1)/serial_mean_r1*100:.1f}% vs serial)
+  Adaptive: {adapt_mean_r1:.4f}  ({(adapt_mean_r1-serial_mean_r1)/serial_mean_r1*100:.1f}% vs serial)
 """)
 
 print("─"*70)
-print("WHAT NEEDS TO BE FIXED BEFORE RE-RUNNING:")
+print("AUTOMATED DATA QUALITY CHECKS:")
 print("─"*70)
-print("""
-  1. Fix PRO score recording in run_naive_mpi.py and run_adaptive_mpi.py:
-     After probe generation, store the scores in the per-subtask dict and
-     write them to the result record's uncertainty_scores list.
-
-  2. Add missing adaptive fields to result schema:
-     decomposed, locally_processed, fallback_to_serial must be logged.
-
-  3. Fix node_a latency recording:
-     Any subtask executed locally on the master must add its latency_ms
-     to node_latencies_ms['node_a'], not leave it as 0.
-
-  4. Fix BERTScore: test bert_score import in isolation before re-running.
-     If OOM, skip it or compute post-hoc on saved outputs.
-
-  5. Reduce max_tokens for parallel subtasks: each subtask fragment gets
-     full max_tokens allocation. With 4 subtasks each generating 192 tokens
-     the total output is 4x the serial output, inflating node_b latency.
-     Set per-subtask max_tokens = max_tokens // n_subtasks.
-""")
+for label, rows in datasets.items():
+    bert_nan = sum(
+        1
+        for r in rows
+        if isinstance(r.get("correctness", {}).get("bert"), float) and math.isnan(r.get("correctness", {}).get("bert"))
+    )
+    pro_vals = [v for r in rows for v in (r.get("uncertainty_scores") or []) if v is not None]
+    pro_valid = [v for v in pro_vals if not (isinstance(v, float) and math.isnan(v))]
+    has_step_latency = sum(1 for r in rows if isinstance(r.get("step_latencies_ms"), dict))
+    print(
+        f"  {label:<8} | BERT NaN: {bert_nan}/{len(rows)}"
+        f" | Valid PRO: {len(pro_valid)}/{len(pro_vals)}"
+        f" | step_latencies_ms present: {has_step_latency}/{len(rows)}"
+    )
 
 print(SEP)
-print("SECTION 11: CODE AND LOGIC VALIDITY ASSESSMENT")
+print("SECTION 11: UPDATED DIAGNOSTIC SUMMARY")
 print(SEP)
-print("""
-  run_serial.py:       VALID. Logic is correct. PRO scores recorded properly.
-                       Step latency breakdown is well-instrumented.
-
-  run_naive_mpi.py:    LOGIC VALID, RECORDING BUG. Round-robin dispatch and
-                       pipelined refill pattern are correct. PRO scores computed
-                       but not written to result record. Worker fallback to local
-                       is properly implemented.
-
-  run_adaptive_mpi.py: LOGIC VALID, RECORDING BUGS. EMA-based scheduling and
-                       should_decompose() gate are sound approaches. Worker rank
-                       scoring with rtt+compute estimation is theoretically correct.
-                       Three bugs: PRO scores not recorded, adaptive fields not
-                       logged, node_a latency not accumulated.
-
-  naive.py scheduler:  VALID. Simple round-robin, no issues.
-
-  uncertainty_aware.py: VALID. PRO threshold routing and network feasibility
-                        check are correct. Fallback to all-node_a is correct.
-
-  EMA class:           VALID. alpha=0.2 is a reasonable choice for slowly
-                       changing latency estimates. Initial probe via probe_workers()
-                       before processing is good practice.
-
-  should_decompose():  VALID concept but the threshold (0.5x) may be too
-                       aggressive for high-latency networks. At 150-200ms RTT
-                       the break-even point for decomposition shifts significantly.
-""")
+if not step_df.empty:
+    print("Top latency contributors by pipeline (highest mean step first):")
+    top_steps = step_df.sort_values(["Pipeline", "Mean (ms)"], ascending=[True, False]).groupby("Pipeline").head(3)
+    print(top_steps.to_string(index=False))
+else:
+    print("No step-latency data found. Re-run experiments with step_latencies_ms logging enabled.")
 
 print(f"\n{SEP}")
 print(f"All outputs saved to: {OUT_DIR}")
-print("Files: latency_summary.csv, serial_step_latencies.csv,")
-print("       correctness_summary.csv, pro_score_summary.csv,")
-print("       decomposition_summary.csv, full_comparison.csv,")
+print("Files: latency_summary.csv, step_latency_summary.csv,")
+print("       correctness_summary.csv, pro_score_summary.csv, calibration_summary.csv,")
+print("       decomposition_summary.csv, decomposition_alignment_summary.csv, full_comparison.csv,")
 print("       plot_latency_distribution.png, plot_correctness_metrics.png,")
 print("       plot_pro_scores_serial.png, plot_serial_step_latency.png,")
 print("       plot_subtask_distribution.png, plot_nodeb_latency_comparison.png,")

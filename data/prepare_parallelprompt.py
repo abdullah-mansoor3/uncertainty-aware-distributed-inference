@@ -198,27 +198,36 @@ def row_to_canonical(row: pd.Series, new_id: int) -> dict:
     """Convert one ParallelPrompt row to the project canonical JSONL schema."""
     prompt = str(row.get("prompt", "")).strip()
 
-    # iterations = the list of independent sub-items the prompt decomposes into.
-    # This is the dataset's own ground truth for what a decomposer should extract.
+    # iterations = decomposition ground truth (expected independent subtasks).
     iterations = row.get("iterations")
     if isinstance(iterations, list):
-        ground_truth = [str(item).strip() for item in iterations if str(item).strip()]
+        decomposition_ground_truth = [str(item).strip() for item in iterations if str(item).strip()]
     elif iterations is not None:
-        ground_truth = [str(iterations).strip()]
+        decomposition_ground_truth = [str(iterations).strip()]
     else:
-        ground_truth = []
+        decomposition_ground_truth = []
+
+    # context is treated as answer/reference ground truth when present.
+    context_value = row.get("context")
+    if isinstance(context_value, str) and context_value.strip():
+        answer_ground_truth = [context_value.strip()]
+    else:
+        answer_ground_truth = []
 
     return {
         "id": new_id,
         "original_prompt": prompt,
-        "ground_truth": ground_truth,
+        # Canonical answer references used for ROUGE/BLEU/METEOR/BERT.
+        "ground_truth": answer_ground_truth,
+        # Canonical decomposition references used to score decomposition quality.
+        "decomposition_ground_truth": decomposition_ground_truth,
         # meta is kept for analysis scripts but not used by pipeline runners
         "meta": {
             "source": str(row.get("source", "")),
             "task_type": str(row.get("task_type", "")),
             "is_parallel": bool(row.get("is_parallel", False)),
             "confidence": str(row.get("confidence", "")),
-            "context": str(row.get("context", "")) if row.get("context") else None,
+            "context": str(context_value) if context_value else None,
         },
     }
 
@@ -298,9 +307,10 @@ def main() -> None:
     LOGGER.info("--- Sample output records ---")
     for record in records[:3]:
         LOGGER.info(
-            "id=%s | task=%s | iterations=%s | prompt=%s...",
+            "id=%s | task=%s | decomp_gt=%s | answer_gt=%s | prompt=%s...",
             record["id"],
             record["meta"]["task_type"],
+            len(record["decomposition_ground_truth"]),
             len(record["ground_truth"]),
             record["original_prompt"][:80],
         )
