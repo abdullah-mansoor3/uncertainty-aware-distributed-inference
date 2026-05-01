@@ -15,6 +15,7 @@ import argparse
 import json
 import logging
 import random
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -247,6 +248,24 @@ def detect_language(text: str) -> str:
         return "unknown"
 
 
+NON_LATIN_SCRIPT_RE = re.compile(
+    r"["
+    r"\u0400-\u04FF"  # Cyrillic
+    r"\u0370-\u03FF"  # Greek
+    r"\u0590-\u05FF"  # Hebrew
+    r"\u0600-\u06FF"  # Arabic
+    r"\u0900-\u097F"  # Devanagari
+    r"\u0E00-\u0E7F"  # Thai
+    r"\u3040-\u309F"  # Hiragana
+    r"\u30A0-\u30FF"  # Katakana
+    r"\u31F0-\u31FF"  # Katakana Phonetic Extensions
+    r"\u3400-\u4DBF"  # CJK Unified Ideographs Extension A
+    r"\u4E00-\u9FFF"  # CJK Unified Ideographs
+    r"\uAC00-\uD7AF"  # Hangul Syllables
+    r"]"
+)
+
+
 def filter_english_only(df: pd.DataFrame) -> pd.DataFrame:
     """Remove rows where prompt is not detected as English.
 
@@ -260,7 +279,22 @@ def filter_english_only(df: pd.DataFrame) -> pd.DataFrame:
         LOGGER.warning("No prompt column found, skipping language filter.")
         return df
 
-    LOGGER.info("Running language detection on %s rows...", len(df))
+    LOGGER.info("Removing prompts with non-Latin scripts...")
+
+    def has_non_latin_script(text: str) -> bool:
+        if not isinstance(text, str) or not text.strip():
+            return True
+        return NON_LATIN_SCRIPT_RE.search(text) is not None
+
+    non_latin_mask = df["prompt"].apply(has_non_latin_script)
+    latin_df = df[~non_latin_mask].copy()
+
+    LOGGER.info(
+        "Script filter: kept %s / %s rows (dropped %s non-Latin script)",
+        len(latin_df), len(df), len(df) - len(latin_df),
+    )
+
+    LOGGER.info("Running language detection on %s rows...", len(latin_df))
 
     def is_english(text: str) -> bool:
         if not isinstance(text, str) or not text.strip():
@@ -268,12 +302,12 @@ def filter_english_only(df: pd.DataFrame) -> pd.DataFrame:
         lang = detect_language(text[:300])  # first 300 chars is enough for detection
         return lang == "en"
 
-    mask = df["prompt"].apply(is_english)
-    english_df = df[mask].copy()
+    mask = latin_df["prompt"].apply(is_english)
+    english_df = latin_df[mask].copy()
 
     LOGGER.info(
         "Language filter: kept %s / %s rows (dropped %s non-English)",
-        len(english_df), len(df), len(df) - len(english_df),
+        len(english_df), len(latin_df), len(latin_df) - len(english_df),
     )
     return english_df
 
