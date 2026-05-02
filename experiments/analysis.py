@@ -1,19 +1,19 @@
-"""
-Experiment Results Analysis
-Uncertainty-Aware Adaptive Distributed Inference on Heterogeneous CPU Clusters
-Pipelines: Serial | Naive MPI Parallel | Adaptive MPI Parallel
+"""Experiment Results Analysis for ParallelPrompt (2nd run).
+
+Pipelines: Serial | Naive MPI | Adaptive MPI
+The outputs and plots are designed for paper-ready comparisons and ablations.
 """
 
 import json
 import math
-import os
 import random
-import textwrap
 import warnings
+from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
@@ -27,217 +27,191 @@ pd.set_option("display.width", 200)
 
 random.seed(42)
 
-SERIAL_PATH   = "./results/results_serial_parallelprompt.jsonl"
-NAIVE_PATH    = "./results/results_naive_mpi_parallelprompt.jsonl"
-ADAPTIVE_PATH = "./results/results_adaptive_mpi_parallelprompt.jsonl"
-OUT_DIR       = Path("./results/outputs/analysis")
+SERIAL_PATH = "./results/results_serial_parallelprompt.jsonl"
+NAIVE_PATH = "./results/results_naive_mpi_parallelprompt_2ndrun.jsonl"
+ADAPTIVE_PATH = "./results/results_adaptive_mpi_parallelprompt_2ndrun.jsonl"
+
+OUT_DIR = Path("./results/outputs/analysis_parallelprompt_2ndrun")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-SEP  = "=" * 80
-SEP2 = "-" * 80
+SEP = "=" * 80
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 1. LOAD DATA
-# ─────────────────────────────────────────────────────────────────────────────
 
 def load_jsonl(path: str) -> List[Dict[str, Any]]:
     rows = []
-    with open(path) as f:
+    with open(path, "r", encoding="utf-8") as f:
         for line in f:
-            line = line.strip()
-            if line:
-                rows.append(json.loads(line))
+            text = line.strip()
+            if text:
+                rows.append(json.loads(text))
     return rows
 
-serial_rows   = load_jsonl(SERIAL_PATH)
-naive_rows    = load_jsonl(NAIVE_PATH)
+
+def safe_float(x: Any) -> float:
+    try:
+        if x is None:
+            return float("nan")
+        return float(x)
+    except Exception:
+        return float("nan")
+
+
+def is_valid_number(x: Any) -> bool:
+    return isinstance(x, (int, float)) and not (isinstance(x, float) and math.isnan(x))
+
+
+serial_rows = load_jsonl(SERIAL_PATH)
+naive_rows = load_jsonl(NAIVE_PATH)
 adaptive_rows = load_jsonl(ADAPTIVE_PATH)
 
 datasets = {
-    "Serial":   serial_rows,
-    "Naive":    naive_rows,
+    "Serial": serial_rows,
+    "Naive": naive_rows,
     "Adaptive": adaptive_rows,
 }
 
+COLORS = {"Serial": "#2196F3", "Naive": "#FF9800", "Adaptive": "#4CAF50"}
+
 print(SEP)
 print("EXPERIMENT RESULTS ANALYSIS")
-print("Uncertainty-Aware Adaptive Distributed Inference on Heterogeneous CPU Clusters")
+print("ParallelPrompt 2nd Run — Serial vs Naive MPI vs Adaptive MPI")
 print(SEP)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 2. DATASET SUMMARIES + NAN ANALYSIS
+# 1. DATA QUALITY & BASIC SUMMARY
 # ─────────────────────────────────────────────────────────────────────────────
 
-print(f"\n{SEP}")
-print("SECTION 1: DATASET SUMMARIES AND NaN ANALYSIS")
-print(SEP)
+summary_rows = []
+quality_rows = []
 
 for label, rows in datasets.items():
     df = pd.json_normalize(rows)
+    n_samples = len(df)
+    n_subtasks = df["subtasks"].apply(lambda x: len(x) if isinstance(x, list) else 0)
+    latency = pd.to_numeric(df.get("latency_ms"), errors="coerce")
+    merged_ok = df["merged_output"].apply(lambda x: isinstance(x, str) and len(x.strip()) > 0)
 
-    # Flatten correctness columns
-    for metric in ["rouge1", "rougeL", "meteor", "bleu", "bert"]:
-        col = f"correctness.{metric}"
-        if col in df.columns:
-            df[metric] = pd.to_numeric(df[col], errors="coerce")
+    summary_rows.append(
+        {
+            "Pipeline": label,
+            "Samples": n_samples,
+            "Mean Subtasks": float(np.mean(n_subtasks)) if n_samples else float("nan"),
+            "Median Latency (ms)": float(np.nanpercentile(latency, 50)) if n_samples else float("nan"),
+            "Mean Latency (ms)": float(np.nanmean(latency)) if n_samples else float("nan"),
+            "P95 Latency (ms)": float(np.nanpercentile(latency, 95)) if n_samples else float("nan"),
+            "P99 Latency (ms)": float(np.nanpercentile(latency, 99)) if n_samples else float("nan"),
+            "Merged Output Empty %": float((~merged_ok).mean() * 100) if n_samples else float("nan"),
+        }
+    )
 
-    # Flatten node latencies
-    for node in ["node_a", "node_b"]:
-        col = f"node_latencies_ms.{node}"
-        if col in df.columns:
-            df[f"lat_{node}"] = pd.to_numeric(df[col], errors="coerce")
+    correctness = df.get("correctness", pd.Series([{}] * n_samples))
+    bert_nan = sum(
+        1
+        for r in rows
+        if isinstance(r.get("correctness", {}).get("bert"), float)
+        and math.isnan(r.get("correctness", {}).get("bert"))
+    )
+    pro_vals = [v for r in rows for v in (r.get("uncertainty_scores") or []) if v is not None]
+    pro_valid = [v for v in pro_vals if not (isinstance(v, float) and math.isnan(v))]
+    quality_rows.append(
+        {
+            "Pipeline": label,
+            "Valid PRO %": (len(pro_valid) / max(len(pro_vals), 1)) * 100,
+            "BERT NaN %": (bert_nan / max(n_samples, 1)) * 100,
+            "Has step_latencies_ms %": (df.get("step_latencies_ms").apply(lambda x: isinstance(x, dict)).mean() * 100)
+            if "step_latencies_ms" in df.columns
+            else 0.0,
+        }
+    )
 
-    # PRO scores: expand list column
-    def mean_pro(x):
-        try:
-            vals = [float(v) for v in x if v is not None and not (isinstance(v, float) and math.isnan(v))]
-            return np.mean(vals) if vals else float("nan")
-        except Exception:
-            return float("nan")
+summary_df = pd.DataFrame(summary_rows)
+quality_df = pd.DataFrame(quality_rows)
+summary_df.to_csv(OUT_DIR / "summary_overview.csv", index=False)
+quality_df.to_csv(OUT_DIR / "data_quality_checks.csv", index=False)
 
-    df["pro_mean"] = df["uncertainty_scores"].apply(mean_pro)
-    df["n_subtasks"] = df["subtasks"].apply(len)
-    df["n_outputs"]  = df["outputs"].apply(len)
-    df["latency_ms"] = pd.to_numeric(df["latency_ms"], errors="coerce")
-
-    print(f"\n{'─'*60}")
-    print(f"  Pipeline: {label.upper()}  ({len(df)} samples)")
-    print(f"{'─'*60}")
-    print(f"  Columns: {list(df.columns)}")
-
-    # NaN counts for key columns
-    key_cols = ["rouge1", "rougeL", "meteor", "bleu", "bert", "pro_mean",
-                "latency_ms", "lat_node_a", "lat_node_b", "n_subtasks"]
-    key_cols = [c for c in key_cols if c in df.columns]
-    nan_summary = pd.DataFrame({
-        "column":    key_cols,
-        "nan_count": [int(df[c].isna().sum()) for c in key_cols],
-        "nan_pct":   [f"{df[c].isna().mean()*100:.1f}%" for c in key_cols],
-    })
-    print("\n  NaN summary:")
-    print(nan_summary.to_string(index=False))
-
-    # Pipeline-specific extra fields
-    if label == "Adaptive":
-        for field in ["fallback_to_serial", "locally_processed", "decomposed", "fallback"]:
-            if field in df.columns:
-                pct = df[field].sum() / len(df) * 100
-                print(f"\n  {field}: {int(df[field].sum())}/{len(df)}  ({pct:.1f}%)")
-
-    # Drop rows where merged_output is empty
-    before = len(df)
-    df = df[df["merged_output"].apply(lambda x: isinstance(x, str) and len(x.strip()) > 0)]
-    after = len(df)
-    if before != after:
-        print(f"\n  Dropped {before-after} rows with empty merged_output. Remaining: {after}")
-
-print()
+print("\nSummary Overview:")
+print(summary_df.to_string(index=False))
+print("\nData Quality Checks:")
+print(quality_df.to_string(index=False))
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3. RANDOM SAMPLE INSPECTION  (5 per pipeline)
+# 2. CORRECTNESS METRICS SUMMARY
 # ─────────────────────────────────────────────────────────────────────────────
 
-print(f"\n{SEP}")
-print("SECTION 2: RANDOM SAMPLE INSPECTION  (5 samples per pipeline)")
-print(SEP)
+def safe_mean_corr(rows: List[Dict[str, Any]], metric: str) -> float:
+    vals = [
+        r.get("correctness", {}).get(metric)
+        for r in rows
+        if r.get("correctness")
+        and r.get("correctness", {}).get(metric) is not None
+        and not (isinstance(r.get("correctness", {}).get(metric), float) and math.isnan(r.get("correctness", {}).get(metric)))
+    ]
+    return float(np.mean(vals)) if vals else float("nan")
 
-def wrap(text: str, width: int = 100, indent: str = "    ") -> str:
-    if not isinstance(text, str):
-        text = str(text)
-    lines = textwrap.wrap(text, width)
-    return ("\n" + indent).join(lines) if lines else "(empty)"
 
+def pct_zero(rows: List[Dict[str, Any]], metric: str) -> float:
+    vals = [
+        r.get("correctness", {}).get(metric)
+        for r in rows
+        if r.get("correctness")
+        and r.get("correctness", {}).get(metric) is not None
+        and not (isinstance(r.get("correctness", {}).get(metric), float) and math.isnan(r.get("correctness", {}).get(metric)))
+    ]
+    if not vals:
+        return float("nan")
+    return float(sum(1 for v in vals if v == 0) / len(vals) * 100)
+
+
+correctness_rows = []
 for label, rows in datasets.items():
-    print(f"\n{'═'*70}")
-    print(f"  PIPELINE: {label.upper()}")
-    print(f"{'═'*70}")
+    correctness_rows.append(
+        {
+            "Pipeline": label,
+            "ROUGE-1": safe_mean_corr(rows, "rouge1"),
+            "ROUGE-L": safe_mean_corr(rows, "rougeL"),
+            "METEOR": safe_mean_corr(rows, "meteor"),
+            "BLEU": safe_mean_corr(rows, "bleu"),
+            "BERTScore": safe_mean_corr(rows, "bert"),
+            "ROUGE-1 Zero %": pct_zero(rows, "rouge1"),
+            "METEOR Zero %": pct_zero(rows, "meteor"),
+        }
+    )
 
-    sample_ids = random.sample(range(len(rows)), min(5, len(rows)))
-
-    for i, idx in enumerate(sample_ids):
-        r = rows[idx]
-        print(f"\n  ── Sample {i+1}  (record id={r.get('id')}) ──")
-
-        print(f"\n  [ORIGINAL PROMPT]")
-        prompt = str(r.get("original_prompt", ""))
-        print(f"    {wrap(prompt)}")
-
-        subtasks = r.get("subtasks", [])
-        print(f"\n  [SUBTASKS]  ({len(subtasks)} total)")
-        for si, st in enumerate(subtasks):
-            print(f"    [{si}] {wrap(str(st), indent='        ')}")
-
-        outputs = r.get("outputs", [])
-        print(f"\n  [OUTPUTS PER SUBTASK]  ({len(outputs)} total)")
-        for oi, out in enumerate(outputs):
-            print(f"    [{oi}] {wrap(str(out), indent='        ')}")
-
-        merged = str(r.get("merged_output", ""))
-        print(f"\n  [MERGED OUTPUT]")
-        print(f"    {wrap(merged)}")
-
-        routing = r.get("routing", {})
-        print(f"\n  [ROUTING]  {routing}")
-
-        corr = r.get("correctness", {})
-        pro  = r.get("uncertainty_scores", [])
-        print(f"  [CORRECTNESS]  rouge1={corr.get('rouge1','N/A'):.4f}  "
-              f"rougeL={corr.get('rougeL','N/A'):.4f}  "
-              f"meteor={corr.get('meteor','N/A'):.4f}  "
-              f"bleu={corr.get('bleu','N/A'):.4f}")
-        print(f"  [PRO SCORES]  {[round(v,4) if v is not None and not (isinstance(v,float) and math.isnan(v)) else 'NaN' for v in pro]}")
-        print(f"  [LATENCY]  total={r.get('latency_ms','N/A')} ms  "
-              f"node_a={r.get('node_latencies_ms',{}).get('node_a','N/A')} ms  "
-              f"node_b={r.get('node_latencies_ms',{}).get('node_b','N/A')} ms")
-        print(f"  {SEP2}")
+correctness_df = pd.DataFrame(correctness_rows)
+correctness_df.to_csv(OUT_DIR / "correctness_summary.csv", index=False)
+print("\nCorrectness Summary:")
+print(correctness_df.to_string(index=False))
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 4. LATENCY ANALYSIS
+# 3. LATENCY & STEP LATENCY BREAKDOWN
 # ─────────────────────────────────────────────────────────────────────────────
 
-print(f"\n{SEP}")
-print("SECTION 3: LATENCY ANALYSIS")
-print(SEP)
-
-latency_summary = []
-
-for label, rows in datasets.items():
-    lats = [r["latency_ms"] for r in rows if isinstance(r.get("latency_ms"), (int, float))]
-    lats = np.array(lats, dtype=float)
-
-    node_a = np.array([r.get("node_latencies_ms", {}).get("node_a", 0) for r in rows], dtype=float)
-    node_b = np.array([r.get("node_latencies_ms", {}).get("node_b", 0) for r in rows], dtype=float)
-
-    row = {
-        "Pipeline":      label,
-        "N":             len(lats),
-        "Mean (ms)":     int(np.nanmean(lats)),
-        "Median (ms)":   int(np.nanpercentile(lats, 50)),
-        "P95 (ms)":      int(np.nanpercentile(lats, 95)),
-        "P99 (ms)":      int(np.nanpercentile(lats, 99)),
-        "Min (ms)":      int(np.nanmin(lats)),
-        "Max (ms)":      int(np.nanmax(lats)),
-        "Std (ms)":      int(np.nanstd(lats)),
-        "NodeA Mean (ms)": int(np.nanmean(node_a)),
-        "NodeB Mean (ms)": int(np.nanmean(node_b)),
-    }
-    latency_summary.append(row)
-
-lat_df = pd.DataFrame(latency_summary)
-print("\nOverall Latency Statistics:")
-print(lat_df.to_string(index=False))
-
-# Step latencies for all pipelines
-print("\n\nStep Latency Breakdown by Pipeline:")
+latency_rows = []
 step_rows = []
+
 for label, rows in datasets.items():
-    steps_agg = {}
+    lats = np.array([safe_float(r.get("latency_ms")) for r in rows], dtype=float)
+    node_a = np.array([safe_float(r.get("node_latencies_ms", {}).get("node_a")) for r in rows], dtype=float)
+    node_b = np.array([safe_float(r.get("node_latencies_ms", {}).get("node_b")) for r in rows], dtype=float)
+
+    latency_rows.append(
+        {
+            "Pipeline": label,
+            "N": len(lats),
+            "Mean (ms)": float(np.nanmean(lats)),
+            "Median (ms)": float(np.nanpercentile(lats, 50)),
+            "P95 (ms)": float(np.nanpercentile(lats, 95)),
+            "P99 (ms)": float(np.nanpercentile(lats, 99)),
+            "NodeA Mean (ms)": float(np.nanmean(node_a)),
+            "NodeB Mean (ms)": float(np.nanmean(node_b)),
+        }
+    )
+
+    steps_agg: Dict[str, List[float]] = defaultdict(list)
     for r in rows:
         for k, v in (r.get("step_latencies_ms") or {}).items():
-            try:
-                steps_agg.setdefault(k, []).append(float(v))
-            except Exception:
-                continue
+            if is_valid_number(v):
+                steps_agg[k].append(float(v))
     for step_name, values in steps_agg.items():
         if not values:
             continue
@@ -245,542 +219,261 @@ for label, rows in datasets.items():
             {
                 "Pipeline": label,
                 "Step": step_name,
-                "Mean (ms)": int(np.mean(values)),
-                "P95 (ms)": int(np.percentile(values, 95)),
-                "Max (ms)": int(np.max(values)),
+                "Mean (ms)": float(np.mean(values)),
+                "P95 (ms)": float(np.percentile(values, 95)),
+                "Max (ms)": float(np.max(values)),
             }
         )
+
+latency_df = pd.DataFrame(latency_rows)
 step_df = pd.DataFrame(step_rows)
-if not step_df.empty:
-    print(step_df.sort_values(["Pipeline", "Mean (ms)"], ascending=[True, False]).to_string(index=False))
-else:
-    print("No step_latencies_ms field found in results.")
-
-# Save
-lat_df.to_csv(OUT_DIR / "latency_summary.csv", index=False)
+latency_df.to_csv(OUT_DIR / "latency_summary.csv", index=False)
 step_df.to_csv(OUT_DIR / "step_latency_summary.csv", index=False)
-print(f"\nSaved: latency_summary.csv, step_latency_summary.csv")
+
+print("\nLatency Summary:")
+print(latency_df.to_string(index=False))
+if not step_df.empty:
+    print("\nStep Latency Summary (Top steps by mean):")
+    top_steps = step_df.sort_values(["Pipeline", "Mean (ms)"], ascending=[True, False]).groupby("Pipeline").head(5)
+    print(top_steps.to_string(index=False))
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 5. CORRECTNESS METRICS
+# 4. ROUTING & LOAD DISTRIBUTION (MPI FOCUS)
 # ─────────────────────────────────────────────────────────────────────────────
 
-print(f"\n{SEP}")
-print("SECTION 4: CORRECTNESS METRICS")
-print(SEP)
-
-correctness_summary = []
+routing_rows = []
+worker_latency_rows = []
+roundtrip_rows = []
 
 for label, rows in datasets.items():
-    def safe_mean(metric):
-        vals = [r["correctness"].get(metric) for r in rows
-                if r.get("correctness") and r["correctness"].get(metric) is not None
-                and not (isinstance(r["correctness"].get(metric), float) and math.isnan(r["correctness"].get(metric)))]
-        return round(np.mean(vals), 4) if vals else float("nan")
+    node_counts = Counter()
+    proposed_counts = Counter()
+    overrides = 0
+    total_routes = 0
 
-    def pct_zero(metric):
-        vals = [r["correctness"].get(metric) for r in rows
-                if r.get("correctness") and r["correctness"].get(metric) is not None
-                and not (isinstance(r["correctness"].get(metric), float) and math.isnan(r["correctness"].get(metric)))]
-        if not vals:
-            return float("nan")
-        return round(sum(1 for v in vals if v == 0) / len(vals) * 100, 1)
+    for r in rows:
+        routing = r.get("routing", {}) or {}
+        proposed = r.get("routing_proposed_by_pro", {}) or {}
+        for k, v in routing.items():
+            node_counts[v] += 1
+            total_routes += 1
+            if proposed and proposed.get(k) and proposed.get(k) != v:
+                overrides += 1
+        for _, v in proposed.items():
+            proposed_counts[v] += 1
 
-    correctness_summary.append({
-        "Pipeline":       label,
-        "ROUGE-1 Mean":   safe_mean("rouge1"),
-        "ROUGE-L Mean":   safe_mean("rougeL"),
-        "METEOR Mean":    safe_mean("meteor"),
-        "BLEU Mean":      safe_mean("bleu"),
-        "BERTScore Mean": safe_mean("bert"),
-        "ROUGE-1 Zero%":  pct_zero("rouge1"),
-        "METEOR Zero%":   pct_zero("meteor"),
-    })
+        for item in r.get("per_subtask_latencies_ms", []) or []:
+            wrank = item.get("worker_rank")
+            rt = safe_float(item.get("round_trip_ms"))
+            inf = safe_float(item.get("inference_ms"))
+            if is_valid_number(rt):
+                roundtrip_rows.append({"Pipeline": label, "worker_rank": wrank, "round_trip_ms": rt, "inference_ms": inf})
+            if wrank is not None and is_valid_number(rt):
+                worker_latency_rows.append({"Pipeline": label, "worker_rank": int(wrank), "round_trip_ms": rt})
 
-corr_df = pd.DataFrame(correctness_summary)
-print("\nAveraged Correctness Metrics:")
-print(corr_df.to_string(index=False))
-corr_df.to_csv(OUT_DIR / "correctness_summary.csv", index=False)
-print(f"\nSaved: correctness_summary.csv")
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 6. PRO UNCERTAINTY SCORES
-# ─────────────────────────────────────────────────────────────────────────────
-
-print(f"\n{SEP}")
-print("SECTION 5: PRO UNCERTAINTY SCORES")
-print(SEP)
-
-pro_summary = []
-for label, rows in datasets.items():
-    all_scores = [v for r in rows for v in (r.get("uncertainty_scores") or [])
-                  if v is not None]
-    valid = [v for v in all_scores if not (isinstance(v, float) and math.isnan(v))]
-    nan_count = len(all_scores) - len(valid)
-
-    pro_summary.append({
-        "Pipeline":     label,
-        "Total Scores": len(all_scores),
-        "Valid":        len(valid),
-        "NaN Count":    nan_count,
-        "NaN %":        f"{nan_count/max(len(all_scores),1)*100:.1f}%" if all_scores else "N/A",
-        "Mean PRO":     round(np.mean(valid), 4) if valid else float("nan"),
-        "Std PRO":      round(np.std(valid), 4) if valid else float("nan"),
-        "Pct > 0.5":    f"{sum(1 for v in valid if v > 0.5)/max(len(valid),1)*100:.1f}%" if valid else "N/A",
-    })
-
-pro_df = pd.DataFrame(pro_summary)
-print("\nPRO Score Summary (uncertainty_scores field):")
-print(pro_df.to_string(index=False))
-pro_df.to_csv(OUT_DIR / "pro_score_summary.csv", index=False)
-print(f"\nSaved: pro_score_summary.csv")
-print()
-for _, row in pro_df.iterrows():
-    if int(row["Valid"]) == 0 and int(row["Total Scores"]) > 0:
-        print(f"  NOTE: {row['Pipeline']} has zero valid PRO scores despite populated uncertainty_scores.")
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 7. DECOMPOSITION ANALYSIS
-# ─────────────────────────────────────────────────────────────────────────────
-
-print(f"\n{SEP}")
-print("SECTION 6: DECOMPOSITION ANALYSIS")
-print(SEP)
-
-decomp_summary = []
-for label, rows in datasets.items():
-    n_sub = [len(r.get("subtasks", [])) for r in rows]
-    decomposed = sum(1 for n in n_sub if n > 1)
-    decomp_summary.append({
-        "Pipeline":          label,
-        "Mean Subtasks":     round(np.mean(n_sub), 2),
-        "Max Subtasks":      max(n_sub),
-        "Min Subtasks":      min(n_sub),
-        "Decomposed (>1)":   decomposed,
-        "Decomposed %":      f"{decomposed/len(rows)*100:.1f}%",
-        "Single Task %":     f"{(len(rows)-decomposed)/len(rows)*100:.1f}%",
-    })
-
-decomp_df = pd.DataFrame(decomp_summary)
-print("\nDecomposition Statistics:")
-print(decomp_df.to_string(index=False))
-decomp_df.to_csv(OUT_DIR / "decomposition_summary.csv", index=False)
-print(f"\nSaved: decomposition_summary.csv")
-
-# Decomposition alignment quality (requires decomposition_ground_truth-derived score in results)
-decomp_align_rows = []
-for label, rows in datasets.items():
-    vals = [
-        float(r.get("decomposition_alignment_score"))
-        for r in rows
-        if r.get("decomposition_alignment_score") is not None
-        and not (isinstance(r.get("decomposition_alignment_score"), float) and math.isnan(r.get("decomposition_alignment_score")))
-    ]
-    decomp_align_rows.append(
+    routing_rows.append(
         {
             "Pipeline": label,
-            "N valid": len(vals),
-            "Mean": round(float(np.mean(vals)), 4) if vals else float("nan"),
-            "P50": round(float(np.percentile(vals, 50)), 4) if vals else float("nan"),
-            "P95": round(float(np.percentile(vals, 95)), 4) if vals else float("nan"),
+            "Total Subtasks": total_routes,
+            "Node A %": (node_counts.get("node_a", 0) / max(total_routes, 1)) * 100,
+            "Node B %": (node_counts.get("node_b", 0) / max(total_routes, 1)) * 100,
+            "Overrides %": (overrides / max(total_routes, 1)) * 100 if total_routes else float("nan"),
         }
     )
-decomp_align_df = pd.DataFrame(decomp_align_rows)
-print("\nDecomposition Alignment Score Summary:")
-print(decomp_align_df.to_string(index=False))
-decomp_align_df.to_csv(OUT_DIR / "decomposition_alignment_summary.csv", index=False)
-print("Saved: decomposition_alignment_summary.csv")
 
-# Subtask count distribution for adaptive
-print("\nAdaptive — Subtask Count Distribution:")
-from collections import Counter
-cnt = Counter(len(r["subtasks"]) for r in adaptive_rows)
-dist_df = pd.DataFrame(sorted(cnt.items()), columns=["Subtask Count", "Frequency"])
-dist_df["% of Samples"] = (dist_df["Frequency"] / len(adaptive_rows) * 100).round(1)
-print(dist_df.to_string(index=False))
+routing_df = pd.DataFrame(routing_rows)
+roundtrip_df = pd.DataFrame(roundtrip_rows)
+worker_latency_df = pd.DataFrame(worker_latency_rows)
+routing_df.to_csv(OUT_DIR / "routing_summary.csv", index=False)
+roundtrip_df.to_csv(OUT_DIR / "per_subtask_latencies.csv", index=False)
+
+if not worker_latency_df.empty:
+    worker_summary = worker_latency_df.groupby(["Pipeline", "worker_rank"]).agg(
+        mean_round_trip_ms=("round_trip_ms", "mean"),
+        p95_round_trip_ms=("round_trip_ms", lambda x: np.percentile(x, 95)),
+        n=("round_trip_ms", "count"),
+    )
+    worker_summary.reset_index().to_csv(OUT_DIR / "worker_rank_latency_summary.csv", index=False)
+
+print("\nRouting Summary:")
+print(routing_df.to_string(index=False))
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 8. ADAPTIVE PIPELINE SPECIFIC ANALYSIS
+# 5. DECOMPOSITION GATE & ADAPTIVE-SPECIFIC FLAGS
 # ─────────────────────────────────────────────────────────────────────────────
 
-print(f"\n{SEP}")
-print("SECTION 7: ADAPTIVE PIPELINE — ROUTING AND FALLBACK ANALYSIS")
-print(SEP)
+adaptive_flags = []
+for label, rows in datasets.items():
+    if label != "Adaptive":
+        continue
+    decomposed = [bool(r.get("decomposed")) for r in rows if "decomposed" in r]
+    locally = [bool(r.get("locally_processed")) for r in rows if "locally_processed" in r]
+    fallback = [bool(r.get("fallback")) for r in rows if "fallback" in r]
+    fallback_serial = [bool(r.get("fallback_to_serial")) for r in rows if "fallback_to_serial" in r]
 
-# Node assignment breakdown
-total_node_a = 0
-total_node_b = 0
-for r in adaptive_rows:
-    for v in r.get("routing", {}).values():
-        if v == "node_a":
-            total_node_a += 1
-        else:
-            total_node_b += 1
+    adaptive_flags.append(
+        {
+            "Pipeline": label,
+            "Decomposed %": (sum(decomposed) / max(len(decomposed), 1)) * 100 if decomposed else float("nan"),
+            "Locally Processed %": (sum(locally) / max(len(locally), 1)) * 100 if locally else float("nan"),
+            "Fallback %": (sum(fallback) / max(len(fallback), 1)) * 100 if fallback else float("nan"),
+            "Fallback to Serial %": (sum(fallback_serial) / max(len(fallback_serial), 1)) * 100 if fallback_serial else float("nan"),
+        }
+    )
 
-total_subtasks = total_node_a + total_node_b
-print(f"\nTotal subtasks scheduled:  {total_subtasks}")
-print(f"Assigned to node_a (i7):   {total_node_a}  ({total_node_a/total_subtasks*100:.1f}%)")
-print(f"Assigned to node_b (i5):   {total_node_b}  ({total_node_b/total_subtasks*100:.1f}%)")
+adaptive_flags_df = pd.DataFrame(adaptive_flags)
+adaptive_flags_df.to_csv(OUT_DIR / "adaptive_flags_summary.csv", index=False)
+if not adaptive_flags_df.empty:
+    print("\nAdaptive Flags Summary:")
+    print(adaptive_flags_df.to_string(index=False))
 
-# fallback field
-fallback_count = sum(1 for r in adaptive_rows if r.get("fallback"))
-print(f"\nFallback triggered (worker unreachable): {fallback_count}/{len(adaptive_rows)}  ({fallback_count/len(adaptive_rows)*100:.1f}%)")
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. UNCERTAINTY VS QUALITY & LATENCY
+# ─────────────────────────────────────────────────────────────────────────────
 
-# Fields that were expected but missing (schema mismatch detection)
-expected_fields = ["fallback_to_serial", "locally_processed", "decomposed"]
-print("\nExpected adaptive fields present in results:")
-for field in expected_fields:
-    present = sum(1 for r in adaptive_rows if field in r)
-    print(f"  {field}: found in {present}/{len(adaptive_rows)} records  "
-          f"{'✓' if present == len(adaptive_rows) else '✗ MISSING from schema'}")
+uq_rows = []
+for label, rows in datasets.items():
+    for r in rows:
+        pro_vals = [v for v in (r.get("uncertainty_scores") or []) if is_valid_number(v)]
+        if not pro_vals:
+            continue
+        rouge1 = r.get("correctness", {}).get("rouge1")
+        latency = r.get("latency_ms")
+        uq_rows.append(
+            {
+                "Pipeline": label,
+                "pro_mean": float(np.mean(pro_vals)),
+                "rouge1": safe_float(rouge1),
+                "latency_ms": safe_float(latency),
+            }
+        )
 
-# Naive vs Adaptive routing comparison
-same_routing = sum(1 for n, a in zip(naive_rows, adaptive_rows) if n["routing"] == a["routing"])
-same_output  = sum(1 for n, a in zip(naive_rows, adaptive_rows) if n["merged_output"] == a["merged_output"])
-print(f"\nNaive vs Adaptive routing identical:       {same_routing}/{len(naive_rows)} samples")
-print(f"Naive vs Adaptive merged_output identical:  {same_output}/{len(naive_rows)} samples")
+uq_df = pd.DataFrame(uq_rows)
+uq_df.to_csv(OUT_DIR / "uncertainty_vs_quality.csv", index=False)
 
-# Node_b latency comparison
-naive_b    = np.array([r["node_latencies_ms"]["node_b"] for r in naive_rows], dtype=float)
-adaptive_b = np.array([r["node_latencies_ms"]["node_b"] for r in adaptive_rows], dtype=float)
-diff = adaptive_b - naive_b
-print(f"\nNode_b latency difference (Adaptive − Naive):")
-print(f"  Mean: {np.mean(diff):.0f} ms   Std: {np.std(diff):.0f} ms")
-print(f"  Adaptive faster on {sum(diff < 0)} samples, slower on {sum(diff > 0)} samples")
+# ─────────────────────────────────────────────────────────────────────────────
+# 7. CALIBRATION SUMMARY (RUNNING METRICS)
+# ─────────────────────────────────────────────────────────────────────────────
 
-# Calibration metrics tracked during MPI runs
-def latest_running_metric(rows, key):
-    vals = [
-        float(r.get(key))
-        for r in rows
-        if r.get(key) is not None and not (isinstance(r.get(key), float) and math.isnan(r.get(key)))
-    ]
+def latest_running_metric(rows: List[Dict[str, Any]], key: str) -> float:
+    vals = [safe_float(r.get(key)) for r in rows if is_valid_number(r.get(key))]
     return vals[-1] if vals else float("nan")
 
-calib_df = pd.DataFrame(
-    [
-        {"Pipeline": "Serial", "ERCE": float("nan"), "AUROC": float("nan")},
-        {"Pipeline": "Naive", "ERCE": latest_running_metric(naive_rows, "running_erce"), "AUROC": latest_running_metric(naive_rows, "running_auroc")},
-        {"Pipeline": "Adaptive", "ERCE": latest_running_metric(adaptive_rows, "running_erce"), "AUROC": latest_running_metric(adaptive_rows, "running_auroc")},
-    ]
-)
-print("\nCalibration Summary (latest running values):")
-print(calib_df.to_string(index=False))
-calib_df.to_csv(OUT_DIR / "calibration_summary.csv", index=False)
-print("Saved: calibration_summary.csv")
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 9. PIPELINE COMPARISON TABLE
-# ─────────────────────────────────────────────────────────────────────────────
-
-print(f"\n{SEP}")
-print("SECTION 8: FULL PIPELINE COMPARISON TABLE")
-print(SEP)
-
-def safe_mean_corr(rows, metric):
-    vals = [r["correctness"].get(metric) for r in rows
-            if r.get("correctness") and r["correctness"].get(metric) is not None
-            and not (isinstance(r["correctness"].get(metric), float) and math.isnan(r["correctness"].get(metric)))]
-    return round(np.mean(vals), 4) if vals else float("nan")
-
-comparison = []
+calib_rows = []
 for label, rows in datasets.items():
-    lats = np.array([r["latency_ms"] for r in rows], dtype=float)
-    pro_vals = [v for r in rows for v in (r.get("uncertainty_scores") or [])
-                if v is not None and not (isinstance(v, float) and math.isnan(v))]
-    n_sub = np.array([len(r.get("subtasks", [])) for r in rows], dtype=float)
-    node_b = np.array([r["node_latencies_ms"]["node_b"] for r in rows], dtype=float)
+    calib_rows.append(
+        {
+            "Pipeline": label,
+            "ERCE (latest)": latest_running_metric(rows, "running_erce"),
+            "AUROC (latest)": latest_running_metric(rows, "running_auroc"),
+        }
+    )
 
-    comparison.append({
-        "Pipeline":          label,
-        "Samples":           len(rows),
-        "Mean Lat (s)":      round(np.nanmean(lats) / 1000, 1),
-        "P95 Lat (s)":       round(np.nanpercentile(lats, 95) / 1000, 1),
-        "P99 Lat (s)":       round(np.nanpercentile(lats, 99) / 1000, 1),
-        "ROUGE-1":           safe_mean_corr(rows, "rouge1"),
-        "ROUGE-L":           safe_mean_corr(rows, "rougeL"),
-        "METEOR":            safe_mean_corr(rows, "meteor"),
-        "BLEU":              safe_mean_corr(rows, "bleu"),
-        "Mean Subtasks":     round(np.mean(n_sub), 2),
-        "PRO Mean":          round(np.mean(pro_vals), 4) if pro_vals else "NaN (all missing)",
-        "ERCE":              round(latest_running_metric(rows, "running_erce"), 4) if label != "Serial" else float("nan"),
-        "AUROC":             round(latest_running_metric(rows, "running_auroc"), 4) if label != "Serial" else float("nan"),
-        "NodeB Mean (s)":    round(np.nanmean(node_b) / 1000, 1),
-    })
-
-comp_df = pd.DataFrame(comparison)
-print("\nFull Comparison Table:")
-print(comp_df.to_string(index=False))
-comp_df.to_csv(OUT_DIR / "full_comparison.csv", index=False)
-print(f"\nSaved: full_comparison.csv")
-
-# Speedup relative to serial
-serial_mean = np.nanmean([r["latency_ms"] for r in serial_rows])
-for label, rows in [("Naive", naive_rows), ("Adaptive", adaptive_rows)]:
-    mean = np.nanmean([r["latency_ms"] for r in rows])
-    slowdown = mean / serial_mean
-    print(f"\n  {label} vs Serial: {slowdown:.2f}x {'slower' if slowdown > 1 else 'faster'} on mean latency")
+calib_df = pd.DataFrame(calib_rows)
+calib_df.to_csv(OUT_DIR / "calibration_summary.csv", index=False)
+print("\nCalibration Summary:")
+print(calib_df.to_string(index=False))
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 10. PLOTS
+# 8. PLOTS (NON-REDUNDANT)
 # ─────────────────────────────────────────────────────────────────────────────
 
-print(f"\n{SEP}")
-print("SECTION 9: GENERATING PLOTS")
-print(SEP)
+print("\nGenerating plots...")
 
-COLORS = {"Serial": "#2196F3", "Naive": "#FF9800", "Adaptive": "#4CAF50"}
-
-# ── Plot 1: Latency distribution (box plots) ──────────────────────────────
-fig, axes = plt.subplots(1, 2, figsize=(13, 5))
-
-latency_data = {label: np.array([r["latency_ms"] for r in rows]) / 1000
-                for label, rows in datasets.items()}
-
-bp = axes[0].boxplot(
-    [latency_data[l] for l in ["Serial", "Naive", "Adaptive"]],
-    labels=["Serial", "Naive MPI", "Adaptive MPI"],
-    patch_artist=True,
-    medianprops=dict(color="black", linewidth=2),
-)
-for patch, color in zip(bp["boxes"], COLORS.values()):
-    patch.set_facecolor(color)
-    patch.set_alpha(0.7)
-axes[0].set_ylabel("Total Latency (seconds)")
-axes[0].set_title("Latency Distribution by Pipeline")
-axes[0].yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:.0f}s"))
-axes[0].grid(axis="y", alpha=0.3)
-
-# P95 / P99 bar chart
-p_labels = ["Mean", "P50", "P95", "P99"]
-x = np.arange(len(p_labels))
-width = 0.25
-for i, (label, rows) in enumerate(datasets.items()):
-    lats = np.array([r["latency_ms"] for r in rows]) / 1000
-    vals = [np.nanmean(lats), np.nanpercentile(lats, 50),
-            np.nanpercentile(lats, 95), np.nanpercentile(lats, 99)]
-    axes[1].bar(x + i * width, vals, width, label=label, color=COLORS[label], alpha=0.8)
-axes[1].set_xticks(x + width)
-axes[1].set_xticklabels(p_labels)
-axes[1].set_ylabel("Latency (seconds)")
-axes[1].set_title("Latency Percentiles by Pipeline")
-axes[1].legend()
-axes[1].grid(axis="y", alpha=0.3)
+# Plot 1: Total latency distribution (box)
+fig, ax = plt.subplots(figsize=(8, 4))
+latency_data = {label: np.array([safe_float(r.get("latency_ms")) for r in rows]) / 1000 for label, rows in datasets.items()}
+ax.boxplot([latency_data[l] for l in ["Serial", "Naive", "Adaptive"]], labels=["Serial", "Naive MPI", "Adaptive MPI"], patch_artist=True)
+ax.set_ylabel("Latency (s)")
+ax.set_title("Total Latency Distribution")
+ax.grid(axis="y", alpha=0.3)
 plt.tight_layout()
-plt.savefig(OUT_DIR / "plot_latency_distribution.png", dpi=150, bbox_inches="tight")
+plt.savefig(OUT_DIR / "plot_latency_box.png", dpi=150, bbox_inches="tight")
 plt.close()
-print("  Saved: plot_latency_distribution.png")
 
-# ── Plot 2: Correctness metrics grouped bar ───────────────────────────────
-fig, ax = plt.subplots(figsize=(11, 5))
-metrics = ["rouge1", "rougeL", "meteor", "bleu"]
-x = np.arange(len(metrics))
-width = 0.25
-for i, (label, rows) in enumerate(datasets.items()):
-    vals = []
-    for m in metrics:
-        v = [r["correctness"].get(m) for r in rows
-             if r.get("correctness") and r["correctness"].get(m) is not None
-             and not (isinstance(r["correctness"].get(m), float) and math.isnan(r["correctness"].get(m)))]
-        vals.append(np.mean(v) if v else 0.0)
-    bars = ax.bar(x + i * width, vals, width, label=label, color=COLORS[label], alpha=0.8)
-    for bar, v in zip(bars, vals):
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.001,
-                f"{v:.3f}", ha="center", va="bottom", fontsize=7)
-ax.set_xticks(x + width)
-ax.set_xticklabels(["ROUGE-1", "ROUGE-L", "METEOR", "BLEU"])
-ax.set_ylabel("Score")
-ax.set_title("Correctness Metrics by Pipeline")
+# Plot 2: Correctness vs latency tradeoff (ROUGE-1)
+fig, ax = plt.subplots(figsize=(7, 5))
+for label, rows in datasets.items():
+    xs = [safe_float(r.get("latency_ms")) / 1000 for r in rows]
+    ys = [safe_float(r.get("correctness", {}).get("rouge1")) for r in rows]
+    ax.scatter(xs, ys, alpha=0.4, label=label, color=COLORS[label], edgecolors="white", s=35)
+ax.set_xlabel("Latency (s)")
+ax.set_ylabel("ROUGE-1")
+ax.set_title("Latency vs ROUGE-1")
+ax.legend()
+ax.grid(alpha=0.3)
+plt.tight_layout()
+plt.savefig(OUT_DIR / "plot_latency_vs_rouge1.png", dpi=150, bbox_inches="tight")
+plt.close()
+
+# Plot 3: Step latency stack (mean) per pipeline
+if not step_df.empty:
+    pivot = step_df.pivot_table(index="Pipeline", columns="Step", values="Mean (ms)", aggfunc="mean").fillna(0)
+    pivot = pivot.reindex(index=["Serial", "Naive", "Adaptive"]) if "Serial" in pivot.index else pivot
+    pivot.plot(kind="bar", stacked=True, figsize=(10, 4))
+    plt.ylabel("Mean step latency (ms)")
+    plt.title("Mean Step Latency Composition")
+    plt.grid(axis="y", alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(OUT_DIR / "plot_step_latency_stacked.png", dpi=150, bbox_inches="tight")
+    plt.close()
+
+# Plot 4: Routing distribution
+fig, ax = plt.subplots(figsize=(6, 4))
+node_a_pct = routing_df.set_index("Pipeline")["Node A %"]
+node_b_pct = routing_df.set_index("Pipeline")["Node B %"]
+idx = np.arange(len(node_a_pct))
+ax.bar(idx, node_a_pct, label="node_a", color="#5DA5DA")
+ax.bar(idx, node_b_pct, bottom=node_a_pct, label="node_b", color="#FAA43A")
+ax.set_xticks(idx)
+ax.set_xticklabels(node_a_pct.index)
+ax.set_ylabel("Share of subtasks (%)")
+ax.set_title("Routing Distribution")
 ax.legend()
 ax.grid(axis="y", alpha=0.3)
 plt.tight_layout()
-plt.savefig(OUT_DIR / "plot_correctness_metrics.png", dpi=150, bbox_inches="tight")
+plt.savefig(OUT_DIR / "plot_routing_distribution.png", dpi=150, bbox_inches="tight")
 plt.close()
-print("  Saved: plot_correctness_metrics.png")
 
-# ── Plot 3: PRO score distribution (serial only — others are NaN) ─────────
-fig, ax = plt.subplots(figsize=(8, 4))
-pro_serial = [v for r in serial_rows for v in (r.get("uncertainty_scores") or [])
-              if v is not None and not (isinstance(v, float) and math.isnan(v))]
-if pro_serial:
-    ax.hist(pro_serial, bins=20, color=COLORS["Serial"], alpha=0.8, edgecolor="white")
-    ax.axvline(0.5, color="red", linestyle="--", linewidth=1.5, label="Threshold τ=0.5")
-    ax.set_xlabel("PRO Score")
-    ax.set_ylabel("Frequency")
-    ax.set_title("PRO Score Distribution — Serial Pipeline")
-    ax.legend()
-    ax.grid(alpha=0.3)
-plt.tight_layout()
-plt.savefig(OUT_DIR / "plot_pro_scores_serial.png", dpi=150, bbox_inches="tight")
-plt.close()
-print("  Saved: plot_pro_scores_serial.png")
-
-# ── Plot 4: Serial step latency breakdown ────────────────────────────────
-fig, ax = plt.subplots(figsize=(9, 4))
-steps_agg = {}
-for r in serial_rows:
-    for k, v in (r.get("step_latencies_ms") or {}).items():
-        try:
-            steps_agg.setdefault(k, []).append(float(v))
-        except Exception:
+# Plot 5: PRO vs ROUGE-1 (all pipelines)
+if not uq_df.empty:
+    fig, ax = plt.subplots(figsize=(7, 5))
+    for label in ["Serial", "Naive", "Adaptive"]:
+        sub = uq_df[uq_df["Pipeline"] == label]
+        if sub.empty:
             continue
-step_means = {k: np.mean(v) / 1000 for k, v in steps_agg.items()}
-keys = list(step_means.keys())
-vals = list(step_means.values())
-bars = ax.barh(keys, vals, color="#2196F3", alpha=0.8, edgecolor="white")
-for bar, v in zip(bars, vals):
-    ax.text(v + 0.05, bar.get_y() + bar.get_height() / 2,
-            f"{v:.1f}s", va="center", fontsize=9)
-ax.set_xlabel("Mean Duration (seconds)")
-ax.set_title("Serial Pipeline — Mean Step Latency Breakdown")
-ax.grid(axis="x", alpha=0.3)
-plt.tight_layout()
-plt.savefig(OUT_DIR / "plot_serial_step_latency.png", dpi=150, bbox_inches="tight")
-plt.close()
-print("  Saved: plot_serial_step_latency.png")
-
-# ── Plot 5: Subtask count distribution ───────────────────────────────────
-fig, ax = plt.subplots(figsize=(10, 4))
-from collections import Counter
-for label, rows in [("Naive", naive_rows), ("Adaptive", adaptive_rows)]:
-    cnt = Counter(len(r["subtasks"]) for r in rows)
-    x_vals = sorted(cnt.keys())
-    y_vals = [cnt[k] for k in x_vals]
-    ax.plot(x_vals, y_vals, "o-", label=label, color=COLORS[label], alpha=0.8)
-ax.set_xlabel("Number of Subtasks per Sample")
-ax.set_ylabel("Frequency")
-ax.set_title("Subtask Count Distribution (Naive vs Adaptive)")
-ax.legend()
-ax.grid(alpha=0.3)
-plt.tight_layout()
-plt.savefig(OUT_DIR / "plot_subtask_distribution.png", dpi=150, bbox_inches="tight")
-plt.close()
-print("  Saved: plot_subtask_distribution.png")
-
-# ── Plot 6: Node_b latency per sample — Naive vs Adaptive ────────────────
-fig, ax = plt.subplots(figsize=(11, 4))
-ids = list(range(len(naive_rows)))
-ax.plot(ids, [r["node_latencies_ms"]["node_b"] / 1000 for r in naive_rows],
-        alpha=0.7, label="Naive node_b", color=COLORS["Naive"], linewidth=0.8)
-ax.plot(ids, [r["node_latencies_ms"]["node_b"] / 1000 for r in adaptive_rows],
-        alpha=0.7, label="Adaptive node_b", color=COLORS["Adaptive"], linewidth=0.8)
-ax.set_xlabel("Sample Index")
-ax.set_ylabel("Node_b Latency (seconds)")
-ax.set_title("Per-Sample Node_b (i5 Worker) Latency: Naive vs Adaptive")
-ax.legend()
-ax.grid(alpha=0.3)
-plt.tight_layout()
-plt.savefig(OUT_DIR / "plot_nodeb_latency_comparison.png", dpi=150, bbox_inches="tight")
-plt.close()
-print("  Saved: plot_nodeb_latency_comparison.png")
-
-# ── Plot 7: Total latency per sample across all 3 pipelines ──────────────
-fig, ax = plt.subplots(figsize=(12, 4))
-for label, rows in datasets.items():
-    ax.plot([r["latency_ms"] / 1000 for r in rows],
-            alpha=0.75, label=label, color=COLORS[label], linewidth=0.9)
-ax.set_xlabel("Sample Index")
-ax.set_ylabel("Total Latency (seconds)")
-ax.set_title("Per-Sample Total Latency Across Pipelines")
-ax.legend()
-ax.grid(alpha=0.3)
-plt.tight_layout()
-plt.savefig(OUT_DIR / "plot_per_sample_latency.png", dpi=150, bbox_inches="tight")
-plt.close()
-print("  Saved: plot_per_sample_latency.png")
-
-# ── Plot 8: PRO score vs ROUGE-1 (serial only) ───────────────────────────
-fig, ax = plt.subplots(figsize=(7, 5))
-pro_vals_s = []
-r1_vals_s  = []
-for r in serial_rows:
-    for v in (r.get("uncertainty_scores") or []):
-        if v is not None and not (isinstance(v, float) and math.isnan(v)):
-            rouge1 = r["correctness"].get("rouge1")
-            if rouge1 is not None and not (isinstance(rouge1, float) and math.isnan(rouge1)):
-                pro_vals_s.append(v)
-                r1_vals_s.append(rouge1)
-if pro_vals_s:
-    ax.scatter(pro_vals_s, r1_vals_s, alpha=0.5, color=COLORS["Serial"], edgecolors="white", s=40)
-    ax.axvline(0.5, color="red", linestyle="--", linewidth=1.2, label="τ=0.5")
-    # regression line
-    z = np.polyfit(pro_vals_s, r1_vals_s, 1)
-    p = np.poly1d(z)
-    x_line = np.linspace(min(pro_vals_s), max(pro_vals_s), 100)
-    ax.plot(x_line, p(x_line), "k--", linewidth=1, label="Linear fit")
-    corr = np.corrcoef(pro_vals_s, r1_vals_s)[0, 1]
-    ax.set_title(f"PRO Score vs ROUGE-1 (Serial, n={len(pro_vals_s)}, r={corr:.3f})")
-    ax.set_xlabel("PRO Score (uncertainty)")
-    ax.set_ylabel("ROUGE-1 (correctness)")
+        ax.scatter(sub["pro_mean"], sub["rouge1"], alpha=0.5, label=label, color=COLORS[label], edgecolors="white", s=35)
+    ax.set_xlabel("Mean PRO score")
+    ax.set_ylabel("ROUGE-1")
+    ax.set_title("Uncertainty vs Correctness")
     ax.legend()
     ax.grid(alpha=0.3)
-plt.tight_layout()
-plt.savefig(OUT_DIR / "plot_pro_vs_rouge1.png", dpi=150, bbox_inches="tight")
-plt.close()
-print("  Saved: plot_pro_vs_rouge1.png")
+    plt.tight_layout()
+    plt.savefig(OUT_DIR / "plot_pro_vs_rouge1.png", dpi=150, bbox_inches="tight")
+    plt.close()
+
+# Plot 6: Worker rank round-trip latency (MPI only)
+if not worker_latency_df.empty:
+    fig, ax = plt.subplots(figsize=(7, 4))
+    for label in ["Naive", "Adaptive"]:
+        sub = worker_latency_df[worker_latency_df["Pipeline"] == label]
+        if sub.empty:
+            continue
+        ax.scatter(sub["worker_rank"], sub["round_trip_ms"], alpha=0.4, label=label, s=20)
+    ax.set_xlabel("Worker rank")
+    ax.set_ylabel("Round-trip latency (ms)")
+    ax.set_title("Worker Rank Round-trip Latency")
+    ax.legend()
+    ax.grid(alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(OUT_DIR / "plot_worker_rank_roundtrip.png", dpi=150, bbox_inches="tight")
+    plt.close()
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 11. VALIDITY ASSESSMENT
+# 9. SAVE FINAL COMPARISON TABLE
 # ─────────────────────────────────────────────────────────────────────────────
 
-print(f"\n{SEP}")
-print("SECTION 10: RESULTS VALIDITY ASSESSMENT AND DIAGNOSTIC NOTES")
-print(SEP)
-
-serial_mean_lat  = np.nanmean([r["latency_ms"] for r in serial_rows]) / 1000
-naive_mean_lat   = np.nanmean([r["latency_ms"] for r in naive_rows]) / 1000
-adapt_mean_lat   = np.nanmean([r["latency_ms"] for r in adaptive_rows]) / 1000
-serial_mean_r1   = safe_mean_corr(serial_rows, "rouge1")
-naive_mean_r1    = safe_mean_corr(naive_rows, "rouge1")
-adapt_mean_r1    = safe_mean_corr(adaptive_rows, "rouge1")
-
-print(f"""
-LATENCY OVERVIEW
-  Serial mean latency:   {serial_mean_lat:.1f}s
-  Naive mean latency:    {naive_mean_lat:.1f}s  ({naive_mean_lat/serial_mean_lat:.2f}x vs serial)
-  Adaptive mean latency: {adapt_mean_lat:.1f}s  ({adapt_mean_lat/serial_mean_lat:.2f}x vs serial)
-
-CORRECTNESS OVERVIEW (ROUGE-1)
-  Serial:   {serial_mean_r1:.4f}
-  Naive:    {naive_mean_r1:.4f}  ({(naive_mean_r1-serial_mean_r1)/serial_mean_r1*100:.1f}% vs serial)
-  Adaptive: {adapt_mean_r1:.4f}  ({(adapt_mean_r1-serial_mean_r1)/serial_mean_r1*100:.1f}% vs serial)
-""")
-
-print("─"*70)
-print("AUTOMATED DATA QUALITY CHECKS:")
-print("─"*70)
-for label, rows in datasets.items():
-    bert_nan = sum(
-        1
-        for r in rows
-        if isinstance(r.get("correctness", {}).get("bert"), float) and math.isnan(r.get("correctness", {}).get("bert"))
-    )
-    pro_vals = [v for r in rows for v in (r.get("uncertainty_scores") or []) if v is not None]
-    pro_valid = [v for v in pro_vals if not (isinstance(v, float) and math.isnan(v))]
-    has_step_latency = sum(1 for r in rows if isinstance(r.get("step_latencies_ms"), dict))
-    print(
-        f"  {label:<8} | BERT NaN: {bert_nan}/{len(rows)}"
-        f" | Valid PRO: {len(pro_valid)}/{len(pro_vals)}"
-        f" | step_latencies_ms present: {has_step_latency}/{len(rows)}"
-    )
-
-print(SEP)
-print("SECTION 11: UPDATED DIAGNOSTIC SUMMARY")
-print(SEP)
-if not step_df.empty:
-    print("Top latency contributors by pipeline (highest mean step first):")
-    top_steps = step_df.sort_values(["Pipeline", "Mean (ms)"], ascending=[True, False]).groupby("Pipeline").head(3)
-    print(top_steps.to_string(index=False))
-else:
-    print("No step-latency data found. Re-run experiments with step_latencies_ms logging enabled.")
-
-print(f"\n{SEP}")
-print(f"All outputs saved to: {OUT_DIR}")
-print("Files: latency_summary.csv, step_latency_summary.csv,")
-print("       correctness_summary.csv, pro_score_summary.csv, calibration_summary.csv,")
-print("       decomposition_summary.csv, decomposition_alignment_summary.csv, full_comparison.csv,")
-print("       plot_latency_distribution.png, plot_correctness_metrics.png,")
-print("       plot_pro_scores_serial.png, plot_serial_step_latency.png,")
-print("       plot_subtask_distribution.png, plot_nodeb_latency_comparison.png,")
-print("       plot_per_sample_latency.png, plot_pro_vs_rouge1.png")
-print(SEP)
+comparison_df = summary_df.merge(correctness_df, on="Pipeline").merge(latency_df, on="Pipeline")
+comparison_df.to_csv(OUT_DIR / "full_comparison.csv", index=False)
+print("\nSaved outputs to:", OUT_DIR)

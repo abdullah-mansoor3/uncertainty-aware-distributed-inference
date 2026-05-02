@@ -35,9 +35,9 @@ All three runners log and/or summarize the same core evaluation dimensions:
 
 Result files:
 
-- results/results_serial.jsonl
-- results/results_naive.jsonl
-- results/results_adaptive.jsonl
+- results/results_serial_parallelprompt.jsonl
+- results/results_naive_mpi_parallelprompt_2ndrun.jsonl
+- results/results_adaptive_mpi_parallelprompt_2ndrun.jsonl
 
 ## Repository map
 
@@ -50,9 +50,14 @@ Result files:
 - src/scheduler/naive.py
 - src/scheduler/uncertainty_aware.py
 - src/worker/worker_server.py
+- src/worker/mpi_worker.py
+- src/utils/mpi_networking.py
 - experiments/run_serial.py
 - experiments/run_naive.py
 - experiments/run_adaptive.py
+- experiments/run_naive_mpi.py
+- experiments/run_adaptive_mpi.py
+- experiments/analysis.py
 
 ## Setup
 
@@ -128,35 +133,35 @@ Edit configs/cluster_config.yaml with your actual two-node values:
 - Ensure model.path points to the downloaded GGUF file.
 - Keep scheduler thresholds aligned with your experiment protocol.
 
-## Running experiments
+## Running experiments (final runs)
 
-Serial baseline:
+Serial baseline (ParallelPrompt dataset):
 
 ```bash
 python experiments/run_serial.py \
   --config configs/cluster_config.yaml \
-  --dataset data/processed/nq_open_100.jsonl \
-  --output results/results_serial.jsonl
+  --dataset data/processed/parallelprompt_100.jsonl \
+  --output results/results_serial_parallelprompt.jsonl
 ```
 
-Start worker (on node_b):
+MPI naive pipeline (ParallelPrompt dataset):
 
 ```bash
-python -m uvicorn src.worker.worker_server:app --host 0.0.0.0 --port 8001
-git pull or
-python experiments/run_naive.py \
+mpirun -np 4 --hostfile configs/hostfile \
+  python experiments/run_naive_mpi.py \
   --config configs/cluster_config.yaml \
-  --dataset data/processed/nq_open_100.jsonl \
-  --output results/results_naive.jsonl
+  --dataset data/processed/parallelprompt_100.jsonl \
+  --output results/results_naive_mpi_parallelprompt_2ndrun.jsonl
 ```
 
-Uncertainty-aware parallel (on node_a):
+MPI adaptive pipeline (ParallelPrompt dataset):
 
 ```bash
-python experiments/run_adaptive.py \
+mpirun -np 4 --hostfile configs/hostfile \
+  python experiments/run_adaptive_mpi.py \
   --config configs/cluster_config.yaml \
-  --dataset data/processed/nq_open_100.jsonl \
-  --output results/results_adaptive.jsonl
+  --dataset data/processed/parallelprompt_100.jsonl \
+  --output results/results_adaptive_mpi_parallelprompt_2ndrun.jsonl
 ```
 
 ## Generating Experiment Analysis
@@ -165,33 +170,22 @@ python experiments/run_adaptive.py \
 python experiments/analysis.py
 ```
 
+Outputs are saved under:
+
+- results/outputs/analysis_parallelprompt_2ndrun/
+
+The analysis script is aligned with the final ParallelPrompt results files:
+
+- results/results_serial_parallelprompt.jsonl
+- results/results_naive_mpi_parallelprompt_2ndrun.jsonl
+- results/results_adaptive_mpi_parallelprompt_2ndrun.jsonl
+
 MPI-native runners
 ------------------
 
-Two new MPI-native runners are provided which use `mpi4py` and are intended
-to be launched via `mpirun` or `mpiexec`. These runners preserve the serial
-baseline semantics while enabling round-robin and uncertainty-aware routing
-with reduced communication overhead compared to the HTTP worker path.
-
-Run the MPI naive pipeline (master + workers):
-
-```bash
-mpirun -np 4 --hostfile configs/hostfile \
-  python experiments/run_naive_mpi.py \
-  --config configs/cluster_config.yaml \
-  --dataset data/processed/nq_open_100.jsonl \
-  --output results/results_naive_mpi.jsonl
-```
-
-Run the MPI adaptive pipeline (master + workers):
-
-```bash
-mpirun -np 4 --hostfile configs/hostfile \
-  python experiments/run_adaptive_mpi.py \
-  --config configs/cluster_config.yaml \
-  --dataset data/processed/nq_open_100.jsonl \
-  --output results/results_adaptive_mpi.jsonl
-```
+The MPI-native runners are the primary execution path for the final report.
+They preserve serial semantics while enabling round-robin and uncertainty-aware
+routing with reduced communication overhead compared to the HTTP worker path.
 
 Design choices for MPI runners
 -----------------------------
@@ -217,15 +211,38 @@ Notes
 -----
 - The MPI runners require `mpi4py` in the environment (`pip install mpi4py`) and
   an MPI runtime such as OpenMPI (install and hostfile setup is not shown here).
-- The `configs/cluster_config.yaml` file now contains an `mpi` block used by
-  the MPI runners; leave other config values (model path, scheduler thresholds)
-  unchanged to preserve experiment comparability.
+- The `configs/cluster_config.yaml` file contains an `mpi` block used by the MPI
+  runners; keep model and scheduler settings fixed to preserve comparability.
 
-Repeat each pipeline for:
+Optional HTTP runners
+---------------------
 
-- data/processed/nq_open_100.jsonl
-- data/processed/mmlu_pro_100.jsonl
-- data/processed/synthetic_prompts.jsonl
+The HTTP-based runners are still available for legacy comparison. They require
+the FastAPI worker to be running on the worker node.
+
+Start worker (node_b):
+
+```bash
+python -m uvicorn src.worker.worker_server:app --host 0.0.0.0 --port 8001
+```
+
+Naive parallel (node_a):
+
+```bash
+python experiments/run_naive.py \
+  --config configs/cluster_config.yaml \
+  --dataset data/processed/parallelprompt_100.jsonl \
+  --output results/results_naive.jsonl
+```
+
+Adaptive parallel (node_a):
+
+```bash
+python experiments/run_adaptive.py \
+  --config configs/cluster_config.yaml \
+  --dataset data/processed/parallelprompt_100.jsonl \
+  --output results/results_adaptive.jsonl
+```
 
 ## Analysis workflow
 

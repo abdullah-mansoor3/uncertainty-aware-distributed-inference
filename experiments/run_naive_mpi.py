@@ -48,6 +48,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", required=True, help="Path to cluster config YAML")
     parser.add_argument("--dataset", required=True, help="Path to processed dataset JSONL")
     parser.add_argument("--output", required=True, help="Path to output results JSONL")
+    parser.add_argument(
+        "--start-index",
+        type=int,
+        default=0,
+        help="Start processing from this dataset index (0-based)",
+    )
     parser.add_argument("--verbose", action="store_true", help="Enable debug logging")
     return parser.parse_args()
 
@@ -70,6 +76,36 @@ def append_jsonl(path: Path, record: Dict[str, Any]) -> None:
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")
         handle.flush()
+
+
+def load_existing_output(path: Path) -> tuple[List[Dict[str, Any]], Dict[Any, int]]:
+    if not path.exists():
+        return [], {}
+    records: List[Dict[str, Any]] = []
+    id_to_index: Dict[Any, int] = {}
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            text = line.strip()
+            if not text:
+                continue
+            try:
+                record = json.loads(text)
+            except json.JSONDecodeError:
+                continue
+            record_id = record.get("id")
+            if record_id in id_to_index:
+                records[id_to_index[record_id]] = record
+            else:
+                id_to_index[record_id] = len(records)
+                records.append(record)
+    return records, id_to_index
+
+
+def write_jsonl(path: Path, records: List[Dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        for record in records:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
 def build_contextualized_subtask_prompt(original_prompt: str, subtask_text: str) -> str:
@@ -137,8 +173,7 @@ def main() -> None:
         samples = load_dataset(args.dataset)
         scheduler = NaiveParallelScheduler()
         output_path = Path(args.output)
-        if output_path.exists():
-            output_path.unlink()
+        output_records, output_index = load_existing_output(output_path)
 
         run_latencies: List[float] = []
         calibration_scores: List[float] = []
@@ -151,7 +186,9 @@ def main() -> None:
         else:
             LOGGER.info("MPI workers ready: %s", available_workers)
 
-        for sample in samples:
+        for sample_index, sample in enumerate(samples):
+            if sample_index < max(0, args.start_index):
+                continue
             sample_start = time.perf_counter()
             prompt = str(sample.get("original_prompt", "")).strip()
             references = [str(item) for item in sample.get("ground_truth", [])]
@@ -378,7 +415,14 @@ def main() -> None:
                 "model_path": model_cfg["path"],
                 "quantization": "Q4_K_M",
             }
-            append_jsonl(output_path, record)
+            record_id = record.get("id")
+            if record_id in output_index:
+                output_records[output_index[record_id]] = record
+                write_jsonl(output_path, output_records)
+            else:
+                output_index[record_id] = len(output_records)
+                output_records.append(record)
+                append_jsonl(output_path, record)
             LOGGER.info("Processed sample id=%s latency=%sms", sample.get("id"), latency_ms)
 
         latency_stats = compute_latency_stats(run_latencies)

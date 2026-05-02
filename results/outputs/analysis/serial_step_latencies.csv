@@ -1,8 +1,0 @@
-Step,Mean (ms),P95 (ms),Max (ms)
-decomposition,0,0,0
-scheduling,0,0,0
-probe,5409,17651,24211
-inference,41917,46043,46890
-attribution,14,49,73
-aggregation,0,0,0
-metrics,46,54,2827

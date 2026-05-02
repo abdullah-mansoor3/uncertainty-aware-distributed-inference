@@ -1,4 +1,0 @@
-Pipeline,Samples,Mean Lat (s),P95 Lat (s),P99 Lat (s),ROUGE-1,ROUGE-L,METEOR,BLEU,Mean Subtasks,PRO Mean,NodeB Mean (s)
-Serial,100,47.4,62.2,66.4,0.0229,0.0216,0.0418,0.0067,1.0,0.6965,0.0
-Naive,100,239.7,400.5,666.2,0.0102,0.0096,0.022,0.003,3.93,NaN (all missing),490.9
-Adaptive,100,231.7,360.1,659.1,0.0102,0.0096,0.022,0.003,3.93,NaN (all missing),484.5

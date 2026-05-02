@@ -9,6 +9,7 @@ data/processed/
 output/
 models/*.gguf
 models/.cache/
+results/
 .tmp/
 .pip-cache/
 *.jsonl

@@ -47,7 +47,7 @@ LOGGER = logging.getLogger(__name__)
 class EMA:
     def __init__(self, alpha: float = 0.2):
         self.alpha = alpha
-        self.value = None
+        self.value = 0.0
 
     def update(self, x: float) -> float:
         if self.value is None:
@@ -87,11 +87,21 @@ def append_jsonl(path: Path, record: Dict[str, Any]) -> None:
 
 
 def build_contextualized_subtask_prompt(original_prompt: str, subtask_text: str) -> str:
-    """Preserve full context while executing one decomposed subtask."""
+    """Provide a minimal, context-safe prompt for a single decomposed subtask."""
+    cleaned = " ".join(str(original_prompt).split())
+    if cleaned:
+        sentence_end = cleaned.find(".")
+        if 0 < sentence_end < 240:
+            hint = cleaned[: sentence_end + 1]
+        else:
+            hint = cleaned[:240]
+    else:
+        hint = ""
     return (
-        "You are solving one subtask from a larger request.\n"
-        "Use the full request context below, but answer only the subtask.\n\n"
-        f"FULL REQUEST:\n{original_prompt}\n\n"
+        "You are solving a single subtask from a larger request.\n"
+        "Use only the subtask text below; do not copy or restate the full request.\n"
+        "If the subtask implies a format or tone, follow it exactly.\n\n"
+        f"CONTEXT HINT (truncated):\n{hint}\n\n"
         f"SUBTASK TO SOLVE:\n{subtask_text}\n\n"
         "Return only the subtask answer."
     )
@@ -189,8 +199,8 @@ def schedule_subtasks(
                 scheduled.append(dict(subtask, assigned_rank=int(best_worker), assigned_node=assigned_node))
             continue
 
-        # Tie zone: use dynamic cost model.
-        if best_worker is None:
+        # Tie zone: break ties by lower latency (local vs best worker).
+        if best_worker is None or best_finish >= local_finish:
             local_end = local_finish
             scheduled.append(dict(subtask, assigned_rank=0, assigned_node="node_a"))
         else:
@@ -308,64 +318,64 @@ def main() -> None:
             )
             estimated_workers_time_ms = sum(max(tok, 1) * avg_worker_ms_per_token for tok in subtask_tokens)
             decomposed=True
-            if not should_decompose(decomposition_time_ms, estimated_workers_time_ms):
-                decomposed = False
-                # run locally serially
-                LOGGER.info("Skipping decomposition for sample id=%s due to cost gate", sample.get("id"))
-                generation = generate(
-                    llm=llm,
-                    prompt=prompt,
-                    max_tokens=int(model_cfg["max_tokens"]),
-                    temperature=float(model_cfg.get("temperature", 0.0)),
-                    top_p=float(model_cfg.get("top_p", 1.0)),
-                    logprobs=int(model_cfg.get("logprobs", 10)),
-                    max_inference_ms=int(model_cfg.get("max_inference_ms", 0)),
-                )
-                merged_output = generation.get("text", "")
-                step_latencies_ms["local_inference"] += int(generation.get("latency_ms", 0))
-                metrics_start = time.perf_counter()
-                rouge = compute_rouge(merged_output, references)
-                meteor = compute_meteor(merged_output, references)
-                bleu = compute_bleu(merged_output, references)
-                bert = compute_bert_score(merged_output, references)
-                step_latencies_ms["metrics"] = int((time.perf_counter() - metrics_start) * 1000)
-                decomposition_alignment_score = compute_decomposition_alignment_score([prompt], decomposition_references)
-                running_erce = compute_erce(calibration_scores, calibration_correctness, n_bins=int(config["evaluation"]["n_bins"]))
-                running_auroc = compute_auroc(calibration_scores, calibration_correctness)
+            # if not should_decompose(decomposition_time_ms, estimated_workers_time_ms):
+            #     decomposed = False
+            #     # run locally serially
+            #     LOGGER.info("Skipping decomposition for sample id=%s due to cost gate", sample.get("id"))
+            #     generation = generate(
+            #         llm=llm,
+            #         prompt=prompt,
+            #         max_tokens=int(model_cfg["max_tokens"]),
+            #         temperature=float(model_cfg.get("temperature", 0.0)),
+            #         top_p=float(model_cfg.get("top_p", 1.0)),
+            #         logprobs=int(model_cfg.get("logprobs", 10)),
+            #         max_inference_ms=int(model_cfg.get("max_inference_ms", 0)),
+            #     )
+            #     merged_output = generation.get("text", "")
+            #     step_latencies_ms["local_inference"] += int(generation.get("latency_ms", 0))
+            #     metrics_start = time.perf_counter()
+            #     rouge = compute_rouge(merged_output, references)
+            #     meteor = compute_meteor(merged_output, references)
+            #     bleu = compute_bleu(merged_output, references)
+            #     bert = compute_bert_score(merged_output, references)
+            #     step_latencies_ms["metrics"] = int((time.perf_counter() - metrics_start) * 1000)
+            #     decomposition_alignment_score = compute_decomposition_alignment_score([prompt], decomposition_references)
+            #     running_erce = compute_erce(calibration_scores, calibration_correctness, n_bins=int(config["evaluation"]["n_bins"]))
+            #     running_auroc = compute_auroc(calibration_scores, calibration_correctness)
 
-                latency_ms = int((time.perf_counter() - sample_start) * 1000)
-                run_latencies.append(latency_ms)
-                prompt_tokens = count_tokens(llm, prompt)
-                local_ema.update(float(latency_ms) / max(prompt_tokens, 1))
-                record = {
-                    "id": sample.get("id"),
-                    "pipeline": "adaptive_mpi",
-                    "original_prompt": prompt,
-                    "subtasks": [prompt],
-                    "routing": {"subtask_0": "node_a"},
-                    "uncertainty_scores": [],
-                    "decomposition_alignment_score": decomposition_alignment_score,
-                    "outputs": [merged_output],
-                    "merged_output": merged_output,
-                    "attribution_vectors": [],
-                    "global_attribution": [],
-                    "correctness": {"rouge1": rouge["rouge1"], "rougeL": rouge["rougeL"], "meteor": meteor, "bleu": bleu, "bert": bert},
-                    "latency_ms": latency_ms,
-                    "step_latencies_ms": step_latencies_ms,
-                    "per_subtask_latencies_ms": [],
-                    "node_latencies_ms": {"node_a": latency_ms, "node_b": 0},
-                    "running_erce": running_erce,
-                    "running_auroc": running_auroc,
-                    "fallback_to_serial": True,
-                    "fallback": True,
-                    "locally_processed": True,
-                    "config_hash": config_hash(config),
-                    "model_path": model_cfg["path"],
-                    "quantization": "Q4_K_M",
-                    "decomposed": decomposed,
-                }
-                append_jsonl(output_path, record)
-                continue
+            #     latency_ms = int((time.perf_counter() - sample_start) * 1000)
+            #     run_latencies.append(latency_ms)
+            #     prompt_tokens = count_tokens(llm, prompt)
+            #     local_ema.update(float(latency_ms) / max(prompt_tokens, 1))
+            #     record = {
+            #         "id": sample.get("id"),
+            #         "pipeline": "adaptive_mpi",
+            #         "original_prompt": prompt,
+            #         "subtasks": [prompt],
+            #         "routing": {"subtask_0": "node_a"},
+            #         "uncertainty_scores": [],
+            #         "decomposition_alignment_score": decomposition_alignment_score,
+            #         "outputs": [merged_output],
+            #         "merged_output": merged_output,
+            #         "attribution_vectors": [],
+            #         "global_attribution": [],
+            #         "correctness": {"rouge1": rouge["rouge1"], "rougeL": rouge["rougeL"], "meteor": meteor, "bleu": bleu, "bert": bert},
+            #         "latency_ms": latency_ms,
+            #         "step_latencies_ms": step_latencies_ms,
+            #         "per_subtask_latencies_ms": [],
+            #         "node_latencies_ms": {"node_a": latency_ms, "node_b": 0},
+            #         "running_erce": running_erce,
+            #         "running_auroc": running_auroc,
+            #         "fallback_to_serial": True,
+            #         "fallback": True,
+            #         "locally_processed": True,
+            #         "config_hash": config_hash(config),
+            #         "model_path": model_cfg["path"],
+            #         "quantization": "Q4_K_M",
+            #         "decomposed": decomposed,
+            #     }
+            #     append_jsonl(output_path, record)
+            #     continue
 
             # if we reached here, dispatch subtasks to workers similarly to naive
             scheduler = UncertaintyAwareScheduler(uncertainty_threshold=float(scheduler_cfg.get("uncertainty_threshold", 0.5)), network_feasible_fn=lambda: True)
